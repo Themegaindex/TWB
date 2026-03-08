@@ -18,6 +18,11 @@
     "channel_id": "",
     "token": ""
   },
+  "webmanager": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 5000
+  },
   "bot": {
     "active_hours": "6-23",
     "delay_factor": 1.0,
@@ -30,6 +35,7 @@
     "auto_set_village_names": false,
     "user_agent": null,
     "check_update": true,
+    "debug": false,
     "farm_bag_limit_margin": 0.02
   },
   "building": {

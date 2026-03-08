@@ -1,0 +1,22 @@
+{
+    "village":"nearest",
+    "groups": [
+        {"units": {
+            "light": 25
+        },
+        "await":false
+        },
+        {"units": {
+            "light": 50,
+            "spy": 1
+        },
+        "await":false
+        },
+        {"units": {
+            "light": 100,
+            "spy": 2
+        },
+        "await":false
+        }
+    ]
+}

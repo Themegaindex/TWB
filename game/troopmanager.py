@@ -143,6 +143,22 @@ class TroopManager:
                 self.total_troops[k] = self.total_troops[k] + int(v)
             else:
                 self.total_troops[k] = int(v)
+        
+        # --- BUGFIX: Fallback if all troops are missing from overview (e.g., they are outside the village)
+        if not self.total_troops:
+            self.logger.debug("No total troops found in overview. Falling back to train screen unit manager values.")
+            train_url = f"game.php?village={self.village_id}&screen=train"
+            train_data = self.wrapper.get_url(url=train_url)
+            if train_data:
+                r_data = Extractor.recruit_data(train_data.text)
+                if r_data:
+                    for un, un_data in r_data.items():
+                        if "in_total" in un_data and int(un_data["in_total"]) > 0:
+                            self.total_troops[un] = int(un_data["in_total"])
+                        # Optional: also update troops in home if needed
+                        if "in_village" in un_data and int(un_data["in_village"]) > 0:
+                            self.troops[un] = str(un_data["in_village"])
+        # --- END BUGFIX ---
         # --- END PERFORMANCE ---
         self.logger.debug("Village units total: %s", str(self.total_troops))
 
@@ -714,10 +730,11 @@ class TroopManager:
 
         self.recruit_data = Extractor.recruit_data(data)
         self.game_data = Extractor.game_state(data)
-        self.logger.info("Attempting recruitment of %d %s" % (amount, unit_type))
 
         if amount > self.max_batch_size:
             amount = self.max_batch_size
+
+        self.logger.info("Attempting recruitment of %d %s" % (amount, unit_type))
 
         if unit_type not in self.recruit_data:
             self.logger.warning(

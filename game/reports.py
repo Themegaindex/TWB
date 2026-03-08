@@ -12,6 +12,12 @@ from core.filemanager import FileManager
 from game.attack import AttackCache
 # --- END PERFORMANCE ---
 
+try:
+    from core.database import DatabaseManager
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
+
 
 class ReportManager:
     """
@@ -78,21 +84,8 @@ class ReportManager:
                     return 1
 
                 if entry["losses"] != {}:
-                    # Acceptable losses for attacks
-                    print(f'Units sent: {entry["extra"]["units_sent"]}')
-                    print(f'Units lost: {entry["losses"]}')
-
-                for sent_type in entry["extra"]["units_sent"]:
-                    amount = entry["extra"]["units_sent"][sent_type]
-                    if sent_type in entry["losses"]:
-                        if amount == entry["losses"][sent_type]:
-                            return 0  # Lost all units!
-                        elif entry["losses"][sent_type] <= 1:
-                            # Allow to lose 1 unit (luck depended)
-                            return 1  # Lost 'just' one unit
-
-                if entry["losses"] != {}:
-                    return 0  # Disengage if anything was lost!
+                    # Disengage if anything was lost!
+                    return 0
         return -1
 
     # --- PERFORMANCE (POINT 2) ---
@@ -128,9 +121,21 @@ class ReportManager:
         # --- END PERFORMANCE ---
 
         new = 0
+        from core.database import DatabaseManager
+
         for report_id in ids:
             if report_id in self.last_reports:
                 continue
+                
+            # Optionally check database if report exists to prevent redundant downloads
+            try:
+                if getattr(DatabaseManager, 'get_report', None):
+                    if DatabaseManager.get_report(report_id):
+                        self.last_reports[report_id] = True
+                        continue
+            except Exception:
+                pass
+
             new += 1
             url = f"game.php?village={self.village_id}&screen=report&mode=all&group_id=0&view={report_id}"
             data = self.wrapper.get_url(url)
@@ -195,61 +200,67 @@ class ReportManager:
         if attacked:
             extra["when"] = int(datetime.strptime(attacked.group(1), "%d.%m.%y %H:%M:%S").timestamp())
 
-        attacker = re.search(r'(?s)(<table id="attack_info_att".+?</table>)', report)
+        attacker = re.search(r'(?s)(<table id="attack_info_att".+?Agresor:.*?)<table id="attack_info_att_units"', report)
         if attacker:
-            attacker_data = re.search(
-                r'data-player="(\d+)" data-id="(\d+)"', attacker.group(1)
-            )
-            if attacker_data:
-                from_player = attacker_data.group(1)
-                from_village = attacker_data.group(2)
+            from_village_match = re.search(r'data-id="(\d+)"', attacker.group(1))
+            if from_village_match:
+                from_village = from_village_match.group(1)
+                from_player_match = re.search(r'data-player="(\d+)"', attacker.group(1))
+                from_player = from_player_match.group(1) if from_player_match else "0"
+                
+                # Fetch only the inner units table
                 units = re.search(
                     r'(?s)<table id="attack_info_att_units"(.+?)</table>',
-                    attacker.group(1),
+                    report,
                 )
                 if units:
-                    sent_units = re.findall("(?s)<tr>(.+?)</tr>", units.group(1))
-                    extra["units_sent"] = self.re_unit(
-                        Extractor.units_in_total(sent_units[0])
-                    )
-                    if len(sent_units) == 2:
-                        extra["units_losses"] = self.re_unit(
+                    sent_units = re.findall(r"(?s)<tr[^>]*>(.+?)</tr>", units.group(1))
+                    if len(sent_units) >= 2:
+                        extra["units_sent"] = self.re_unit(
                             Extractor.units_in_total(sent_units[1])
                         )
-                        if from_player == self.game_state["player"]["id"]:
+                    if len(sent_units) == 3:
+                        extra["units_losses"] = self.re_unit(
+                            Extractor.units_in_total(sent_units[2])
+                        )
+                        # Remove the from_player check or at least populate losses properly
+                        if not self.game_state or str(from_player) == str(self.game_state.get("player", {}).get("id")) or "units_losses" in extra:
                             losses = extra["units_losses"]
 
-        defender = re.search(r'(?s)(<table id="attack_info_def".+?</table>)', report)
+        defender = re.search(r'(?s)(<table id="attack_info_def".+?Obro.*?)<table id="attack_info_def_units"', report)
         if defender:
-            defender_data = re.search(
-                r'data-player="(\d+)" data-id="(\d+)"', defender.group(1)
-            )
-            if defender_data:
-                to_player = defender_data.group(1)
-                to_village = defender_data.group(2)
+            to_village_match = re.search(r'data-id="(\d+)"', defender.group(1))
+            if to_village_match:
+                to_village = to_village_match.group(1)
+                to_player_match = re.search(r'data-player="(\d+)"', defender.group(1))
+                to_player = to_player_match.group(1) if to_player_match else "0"
+                
+                # Fetch only the inner units table
                 units = re.search(
                     r'(?s)<table id="attack_info_def_units"(.+?)</table>',
-                    defender.group(1),
+                    report,
                 )
                 if units:
-                    def_units = re.findall("(?s)<tr>(.+?)</tr>", units.group(1))
-                    extra["defence_units"] = self.re_unit(
-                        Extractor.units_in_total(def_units[0])
-                    )
-                    if len(def_units) == 2:
-                        extra["defence_losses"] = self.re_unit(
+                    def_units = re.findall(r"(?s)<tr[^>]*>(.+?)</tr>", units.group(1))
+                    if len(def_units) >= 2:
+                        extra["defence_units"] = self.re_unit(
                             Extractor.units_in_total(def_units[1])
                         )
-                        if to_player == self.game_state["player"]["id"]:
+                    if len(def_units) == 3:
+                        extra["defence_losses"] = self.re_unit(
+                            Extractor.units_in_total(def_units[2])
+                        )
+                        if self.game_state and "player" in self.game_state and str(to_player) == str(self.game_state["player"]["id"]):
                             losses = extra["defence_losses"]
         results = re.search(r'(?s)(<table id="attack_results".+?</table>)', report)
         report = report.replace('<span class="grey">.</span>', "")
         if results:
             loot = {}
             for loot_entry in re.findall(
-                    r'<span class="icon header (wood|stone|iron)".+?</span>(\d+)', report
+                    r'<span class="icon header (wood|stone|iron)".+?</span>([\d\.,\s&nbsp;]+)', report
             ):
-                loot[loot_entry[0]] = loot_entry[1]
+                amount = re.sub(r'[^\d]', '', loot_entry[1])
+                loot[loot_entry[0]] = amount
             extra["loot"] = loot
             self.logger.info("attack report %s -> %s", from_village, to_village)
 
@@ -267,9 +278,10 @@ class ReportManager:
                 extra["buildings"] = self.re_building(json.loads(raw))
             found_res = {}
             for loot_entry in re.findall(
-                    r'<span class="icon header (wood|stone|iron)".+?</span>(\d+)', scout_results.group(1)
+                    r'<span class="icon header (wood|stone|iron)".+?</span>([\d\.,\s&nbsp;]+)', scout_results.group(1)
             ):
-                found_res[loot_entry[0]] = loot_entry[1]
+                amount = re.sub(r'[^\d]', '', loot_entry[1])
+                found_res[loot_entry[0]] = amount
             extra["resources"] = found_res
             units_away = re.search(
                 r'(?s)(<table id="attack_spy_away".+?</table>)', report
@@ -282,12 +294,73 @@ class ReportManager:
 
         # --- PERFORMANCE (POINT 3) ---
         # Update farm statistics immediately when processing the report
-        if attack_type == "attack" and to_village and from_player == self.game_state["player"]["id"]:
+        player_id = self.game_state.get("player", {}).get("id") if self.game_state else None
+        if attack_type == "attack" and to_village and (not player_id or str(from_player) == str(player_id)):
             try:
                 self.update_farm_cache_stats(to_village, extra, losses)
             except Exception as e:
                 self.logger.warning(f"Failed to update farm cache for {to_village}: {e}")
         # --- END PERFORMANCE ---
+
+        # --- DB PERSISTENCE ---
+        if _DB_AVAILABLE:
+            try:
+                loot_dict = extra.get("loot", {})
+                scout_res = extra.get("resources", None)
+                scout_bld = extra.get("buildings", None)
+                # Check HTML indications of win/loss
+                html_won_indicators = [
+                    'image_attack_won', 'Pełna wygrana', 'wygrał', 'green.webp', 'yellow.webp',
+                ]
+                html_loss_indicators = [
+                    'image_attack_lost', 'Porażka', 'red.webp',
+                ]
+                
+                # Deduce win mathematically or via HTML
+                won = (losses == {})
+                if any(ind in report for ind in html_won_indicators):
+                    won = True
+                elif any(ind in report for ind in html_loss_indicators):
+                    won = False
+                elif losses and extra.get("units_sent"):
+                    total_sent = sum(extra["units_sent"].values())
+                    total_lost = sum(losses.values())
+                    won = total_lost < total_sent
+
+                attack_id = DatabaseManager.save_attack(
+                    origin_id   = from_village,
+                    target_id   = to_village,
+                    troops_sent = extra.get("units_sent", {}),
+                    loot        = {k: int(v) for k, v in loot_dict.items()},
+                    won         = won,
+                    scout_only  = (attack_type == "scout"),
+                    arrived_at  = datetime.fromtimestamp(extra["when"]) if extra.get("when") else None,
+                )
+                if losses and attack_id:
+                    DatabaseManager.save_units_lost(attack_id, {k: int(v) for k, v in losses.items()})
+                if extra.get("defence_losses") and attack_id:
+                    DatabaseManager.save_units_lost(
+                        attack_id,
+                        {k: int(v) for k, v in extra["defence_losses"].items()},
+                        side="defender"
+                    )
+                DatabaseManager.save_report(
+                    report_id   = report_id,
+                    report_type = attack_type,
+                    origin_id   = from_village,
+                    dest_id     = to_village,
+                    extra       = extra,
+                    loot        = {k: int(v) for k, v in loot_dict.items()},
+                    losses      = {k: int(v) for k, v in losses.items()} if losses else {},
+                    scout_resources = {k: int(v) for k, v in scout_res.items()} if scout_res else None,
+                    scout_buildings = scout_bld,
+                )
+                # Update production estimate from scout building data
+                if scout_bld and to_village:
+                    DatabaseManager.update_village_production(to_village, scout_bld)
+            except Exception as _db_err:
+                self.logger.debug("DB persistence error in attack_report: %s", _db_err)
+        # --- END DB PERSISTENCE ---
 
         res = self.put(
             report_id, attack_type, from_village, to_village, data=extra, losses=losses
@@ -306,10 +379,14 @@ class ReportManager:
 
         cache_entry = AttackCache.get_cache(village_id)
         if cache_entry is None:
-            # Don't create new entries here, only update existing ones
-            # New entries are created by AttackManager.attacked
-            self.logger.debug(f"No attack cache found for {village_id}, skipping stat update.")
-            return
+            self.logger.debug(f"No attack cache found for {village_id}, creating new entry from report.")
+            cache_entry = {
+                "scout": False,
+                "safe": True,
+                "high_profile": False,
+                "low_profile": False,
+                "last_attack": 0,
+            }
 
         # Initialize stats if not present
         cache_entry.setdefault("attack_count", 0)
@@ -327,9 +404,14 @@ class ReportManager:
 
         if extra_data.get("units_sent"):
             cache_entry["total_sent"] += sum(int(v) for v in extra_data["units_sent"].values())
+            cache_entry["last_sent"] = extra_data["units_sent"]
 
         if losses:
             cache_entry["total_losses"] += sum(int(v) for v in losses.values())
+        
+        # Save was_lost flag based on if there were any losses this run
+        cache_entry["was_lost"] = len(losses) > 0 if losses else False
+        cache_entry["last_losses"] = losses if losses else {}
 
         # Apply farm profile logic
         percentage_lost = (cache_entry["total_losses"] / cache_entry["total_sent"] * 100) if cache_entry["total_sent"] > 0 else 0

@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "TWB Cookie Sync",
+  "version": "1.0",
+  "description": "Automatically sends Tribal Wars / Plemiona session cookies to your local TWB bot server so you never have to paste them manually.",
+  "permissions": [
+    "cookies",
+    "alarms",
+    "storage",
+    "notifications",
+    "tabs",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://*.plemiona.pl/*",
+    "https://*.tribalwars.net/*",
+    "https://*.die-staemme.de/*",
+    "https://*.tribalwars.nl/*",
+    "http://192.168.*.*/*",
+    "http://10.*.*.*/*",
+    "http://172.*.*.*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.plemiona.pl/game.php*",
+        "*://*.tribalwars.net/game.php*",
+        "*://*.die-staemme.de/game.php*",
+        "*://*.tribalwars.nl/game.php*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.plemiona.pl/game.php*",
+        "*://*.tribalwars.net/game.php*",
+        "*://*.die-staemme.de/game.php*",
+        "*://*.tribalwars.nl/game.php*"
+      ],
+      "js": ["map_scraper.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}

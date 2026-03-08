@@ -11,12 +11,30 @@ class DataReader:
     @staticmethod
     def cache_grab(cache_location):
         output = {}
+        if cache_location == "managed":
+            try:
+                import sys
+                sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+                from core.database import DatabaseManager, DBVillageSettings
+                db_s = DatabaseManager._session()
+                if db_s:
+                    for row in db_s.query(DBVillageSettings).all():
+                        if row.settings:
+                            output[row.village_id] = row.settings
+                    db_s.close()
+            except Exception as e:
+                print(f"Error reading managed setting from DB: {e}")
+            return output
+
         c_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "cache",
             cache_location
         )
+        if not os.path.exists(c_path):
+            return output
+            
         for existing in os.listdir(c_path):
             existing = str(existing)
             if not existing.endswith(".json"):
@@ -135,7 +153,7 @@ class BuildingTemplateManager:
 class MapBuilder:
 
     @staticmethod
-    def build(villages, current_village=None, size=None):
+    def build(villages, current_village=None, size=None, attacks=None):
         out_map = {}
         min_x = 999
         max_x = 0
@@ -162,6 +180,8 @@ class MapBuilder:
                 current_location = vdata['location']
                 extra_data['owner'] = vdata['owner']
                 extra_data['tribe'] = vdata['tribe']
+            if attacks and v in attacks:
+                vdata['recent_attack'] = attacks[v]
             grid_vils["%d:%d" % (x, y)] = vdata
 
         if current_location and size:

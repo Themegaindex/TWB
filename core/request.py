@@ -11,9 +11,11 @@ import logging
 import re
 import time
 import random
+import os
 from urllib.parse import urljoin, urlencode
 
 from core.reporter import ReporterObject
+from core.database import DatabaseManager, DBSession
 
 
 class WebWrapper:
@@ -72,7 +74,7 @@ class WebWrapper:
         if not headers:
             headers = self.headers
         try:
-            res = self.web.get(url=url, headers=headers)
+            res = self.web.get(url=url, headers=headers, timeout=30)
             self.logger.debug("GET %s [%d]", url, res.status_code)
             self.post_process(res)
             if 'data-bot-protect="forced"' in res.text:
@@ -101,7 +103,7 @@ class WebWrapper:
         if not headers:
             headers = self.headers
         try:
-            res = self.web.post(url=url, data=data, headers=headers)
+            res = self.web.post(url=url, data=data, headers=headers, timeout=30)
             self.logger.debug("POST %s %s [%d]", url, enc, res.status_code)
             self.post_process(res)
             return res
@@ -109,39 +111,220 @@ class WebWrapper:
             self.logger.warning("POST %s %s: %s", url, enc, str(e))
             return None
 
+    def set_cookies(self, cookies: dict):
+        """
+        Manually inject cookies into headers bypassing requests jar mutating pl_auth
+        """
+        cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+        for k, v in cookies.items():
+            if k == "Cookie":
+                cookie_str = v
+                break
+        self.headers['Cookie'] = cookie_str
+        self.web.cookies.clear()
+        
     def start(self, ):
         """
         Start the bot and verify whether the last session is still valid
         """
-        session_data = FileManager.load_json_file("cache/session.json")
+        session_data = None
+        db_s = DatabaseManager._session()
+        if db_s:
+            try:
+                row = db_s.query(DBSession).order_by(DBSession.updated_at.desc()).first()
+                if row and row.cookies:
+                    session_data = {
+                        "endpoint": row.endpoint,
+                        "server": row.server,
+                        "cookies": row.cookies,
+                        "user_agent": row.user_agent
+                    }
+            except Exception as e:
+                self.logger.error(f"Error reading session from DB: {e}")
+            finally:
+                db_s.close()
+            
         if session_data:
-            self.web.cookies.update(session_data['cookies'])
+            import urllib.parse
+            # Set cookies explicitly decoding url encodings
+            if session_data.get('endpoint'):
+                ep = session_data['endpoint']
+                forbidden_servers = ["www", "plemiona", "tribalwars", "die-staemme"]
+                try:
+                    extracted_server = ep.split("//")[1].split(".")[0]
+                    if extracted_server not in forbidden_servers and len(extracted_server) > 0:
+                        self.endpoint = ep
+                        self.server = extracted_server
+                except Exception:
+                    pass
+            self.set_cookies(session_data['cookies'])
             get_test = self.get_url("game.php?screen=overview")
             if "game.php" in get_test.url:
                 return True
-            self.logger.warning("Current session cache not valid")
+            self.logger.warning("Current database session not valid")
+            # Clear invalid session in DB
+            db_s = DatabaseManager._session()
+            if db_s:
+                try:
+                    db_s.query(DBSession).delete()
+                    db_s.commit()
+                except Exception:
+                    db_s.rollback()
+                finally:
+                    db_s.close()
 
         self.web.cookies.clear()
-        cinp = input("Enter browser cookie string> ")
+        print("Waiting for browser cookie... (Use the Chrome Extension to sync automatically or paste the string here and press Enter)")
+        
+        import sys
+        import select
+        import time
+        cinp = ""
+        while True:
+            # Check if Web Panel filled the DB session in the background
+            db_s = DatabaseManager._session()
+            if db_s:
+                try:
+                    row = db_s.query(DBSession).order_by(DBSession.updated_at.desc()).first()
+                    if row and row.cookies:
+                        session_data = {
+                            "endpoint": row.endpoint,
+                            "server": row.server,
+                            "cookies": row.cookies,
+                            "user_agent": row.user_agent
+                        }
+                    else:
+                        session_data = None
+                except Exception:
+                    session_data = None
+                finally:
+                    db_s.close()
+            else:
+                session_data = None
+                
+            if session_data and "cookies" in session_data and session_data["cookies"]:
+                if session_data.get("endpoint"):
+                    ep = session_data["endpoint"]
+                    forbidden_servers = ["www", "plemiona", "tribalwars", "die-staemme"]
+                    try:
+                        extracted_server = ep.split("//")[1].split(".")[0]
+                        if extracted_server not in forbidden_servers and len(extracted_server) > 0:
+                            self.endpoint = ep
+                            self.server = extracted_server
+                    except Exception:
+                        pass
+                
+                # Update User Agent from Browser
+                if session_data.get("user_agent"):
+                    self.headers["user-agent"] = session_data["user_agent"]
+                    try:
+                        import json
+                        conf = FileManager.load_json_file("config.json")
+                        conf["bot"]["user_agent"] = session_data["user_agent"]
+                        FileManager.save_json_file(conf, "config.json")
+                    except Exception:
+                        pass
+                # Load cookies into request session carefully handling url decoding
+                import urllib.parse
+                # Set raw Cookie String header to avoid `requests` mutating pl_auth characters
+                cookie_str = "; ".join([f"{k}={v}" for k, v in session_data['cookies'].items()])
+                for k, v in session_data['cookies'].items():
+                    if k == "Cookie":
+                        cookie_str = v
+                        break
+                self.headers["Cookie"] = cookie_str
+                
+                get_test_url = urljoin(self.endpoint, "game.php?screen=overview")
+                try:
+                    import urllib.request
+                    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+                        def http_error_302(self, req, fp, code, msg, headers):
+                            return fp
+                    opener = urllib.request.build_opener(NoRedirectHandler())
+                    urllib.request.install_opener(opener)
+                    
+                    req_test = urllib.request.Request(get_test_url)
+                    req_test.add_header('User-Agent', self.headers.get("user-agent", ""))
+                    req_test.add_header('Cookie', cookie_str)
+                    
+                    res_test = urllib.request.urlopen(req_test)
+                    
+                    if getattr(self, "logger", None):
+                        self.logger.info(f"Loaded {len(session_data['cookies'])} cookies from Web Panel!")
+                        self.logger.debug(f"URLLIB Request URL: {get_test_url}")
+                        self.logger.debug(f"URLLIB Header User-Agent: {self.headers.get('user-agent', '')}")
+                        self.logger.debug(f"URLLIB Header Cookie: {cookie_str}")
+                    
+                    if res_test.getcode() == 200:
+                        self.logger.info("Found synced cookies from DB! Login successful.")
+                        self.web.cookies.clear()
+                        return True
+                    else:
+                        self.logger.warning(f"Cookies from DB are invalid. Server returned redirect or error (code: {res_test.getcode()})")
+                        self.logger.warning(f"Sent cookies were: {session_data['cookies'].keys()}")
+                        db_s = DatabaseManager._session()
+                        if db_s:
+                            try:
+                                db_s.query(DBSession).delete()
+                                db_s.commit()
+                            except Exception:
+                                db_s.rollback()
+                            finally:
+                                db_s.close()
+                except Exception as e:
+                    self.logger.warning(f"Error during verify DB credentials: {e}")
+                    db_s = DatabaseManager._session()
+                    if db_s:
+                        try:
+                            db_s.query(DBSession).delete()
+                            db_s.commit()
+                        except Exception:
+                            db_s.rollback()
+                        finally:
+                            db_s.close()
+                
+            # Sprawdź bez blokowania wstrzymania dla wejścia z klawiatury (max 1 sekunda na cykl)
+            if sys.stdin in select.select([sys.stdin], [], [], 1.0)[0]:
+                cinp = sys.stdin.readline().strip()
+                if cinp:
+                    # Ktoś wpisał własne ręczne ciastko
+                    break
+
         cookies = {}
-        cinp = cinp.strip()
         for itt in cinp.split(';'):
             itt = itt.strip()
             kvs = itt.split("=")
-            k = kvs[0]
-            v = '='.join(kvs[1:])
-            cookies[k] = v
+            if len(kvs) > 1:
+                k = kvs[0]
+                v = '='.join(kvs[1:])
+                cookies[k] = v
         self.web.cookies.update(cookies)
         self.logger.info("Game Endpoint: %s", self.endpoint)
 
         for c in self.web.cookies:
             cookies[c.name] = c.value
 
-        FileManager.save_json_file({
-            'endpoint': self.endpoint,
-            'server': self.server,
-            'cookies': cookies
-        }, "cache/session.json")
+        db_s = DatabaseManager._session()
+        if db_s:
+            try:
+                # Remove old sessions
+                db_s.query(DBSession).delete()
+                # Insert new session
+                new_sess = DBSession(
+                    endpoint=self.endpoint,
+                    server=self.server,
+                    cookies=cookies,
+                    user_agent=self.headers.get('user-agent')
+                )
+                db_s.add(new_sess)
+                db_s.commit()
+            except Exception as e:
+                self.logger.error(f"Failed to manually save keyboard session to DB: {e}")
+                db_s.rollback()
+            finally:
+                db_s.close()
+
+        return True
 
     def get_action(self, village_id, action):
         """

@@ -41,14 +41,22 @@ from manager import VillageManager
 from pages.overview import OverviewPage
 from core.exceptions import UnsupportedPythonVersion
 from core.extractors import Extractor
+import subprocess
 
 # --- LOGGING IMPROVEMENT ---
 # Set default log level to DEBUG. Use -v for DEBUG, -q for WARNING.
-log_level = logging.DEBUG
+log_level = logging.INFO
 if "-v" in sys.argv or "--verbose" in sys.argv:
     log_level = logging.DEBUG
 elif "-q" in sys.argv or "--quiet" in sys.argv:
     log_level = logging.WARNING
+
+if not os.path.exists("cache"):
+    os.makedirs("cache")
+
+file_handler = logging.FileHandler("cache/bot.log", "a", encoding="utf-8")
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+logging.getLogger().addHandler(file_handler)
 
 coloredlogs.install(
     level=log_level,
@@ -61,6 +69,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
+
 
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
@@ -88,9 +97,12 @@ class TWB:
         self.runs = 0
         self.found_villages = []
         # --- PERFORMANCE (POINT 4) ---
+        self.found_villages = []
+        # --- PERFORMANCE (POINT 4) ---
         self.config_data = None
         self.config_mtime = 0
         # --- END PERFORMANCE ---
+        self.web_process = None
 
     @staticmethod
     def internet_online():
@@ -162,6 +174,26 @@ class TWB:
             template["server"]["endpoint"] = game_endpoint
             template["server"]["server"] = sub_parts.lower()
             template["bot"]["user_agent"] = browser_ua
+
+            wp_enable = input("Do you want to start the web panel together with the bot? [Y/n]> ")
+            if "webmanager" not in template:
+                template["webmanager"] = {}
+                
+            if "n" not in wp_enable.lower():
+                template["webmanager"]["enabled"] = True
+                wp_host = input("Should the web panel run on localhost (127.0.0.1) or globally (0.0.0.0) or custom IP? [127.0.0.1]> ")
+                wp_host = wp_host.strip() or "127.0.0.1"
+                template["webmanager"]["host"] = wp_host
+                template["webmanager"]["port"] = 5000
+                
+                api_url = f"http://{wp_host}:5000"
+                if wp_host not in ("127.0.0.1", "localhost", "0.0.0.0"):
+                    logging.info(f"Generated API URL for the browser extension: {api_url}")
+                elif wp_host == "0.0.0.0":
+                    logging.info("Generated API URL will be your server's public IP port 5000 (e.g. http://YOUR_IP:5000)")
+                logging.info(f"You can use this API URL in your browser extension to automatically push cookies.")
+            else:
+                template["webmanager"]["enabled"] = False
 
             FileManager.save_json_file(template, "config.json")
             print("Deployed new configuration file")
@@ -367,7 +399,6 @@ class TWB:
             reporter_constr=config["reporting"]["connection_string"],
         )
 
-        self.wrapper.start()
         if not config["bot"].get("user_agent", None):
             print(
                 "No custom user agent was supplied, this will likely get you banned."
@@ -375,7 +406,9 @@ class TWB:
                 "Just google what is my user agent"
             )
             return
+            
         self.wrapper.headers["user-agent"] = config["bot"]["user_agent"]
+        self.wrapper.start()
         for vid in config["villages"]:
             v = Village(wrapper=self.wrapper, village_id=vid)
             self.villages.append(copy.deepcopy(v))
@@ -403,6 +436,10 @@ class TWB:
                 # --- PERFORMANCE (POINT 4) ---
                 # Get cached config
                 config = self.config()
+                if config["bot"].get("debug", False):
+                    logging.getLogger().setLevel(logging.DEBUG)
+                else:
+                    logging.getLogger().setLevel(logging.INFO)
                 # --- END PERFORMANCE ---
                 overview_page, config = self.get_overview(config)
                 has_changed, new_cf = self.get_world_options(overview_page, config)
@@ -491,15 +528,36 @@ class TWB:
         directories = [
             "cache/attacks",
             "cache/reports",
-            "cache/villages",
             "cache/world",
             "cache/logs",
-            "cache/managed",
             "cache/hunter"
         ]
         FileManager.create_directories(directories)
+        
+        config = self.config()
+        if "webmanager" in config and config["webmanager"].get("enabled", False):
+            host = config["webmanager"].get("host", "127.0.0.1")
+            port = str(config["webmanager"].get("port", 5000))
+            logging.info(f"Starting Web Panel on {host}:{port}")
+            web_log = open("cache/webmanager.log", "a")
+            self.web_process = subprocess.Popen(
+                [sys.executable, "webmanager/server.py", port], 
+                env=dict(os.environ, FLASK_RUN_HOST=host, FLASK_RUN_PORT=port),
+                stdout=web_log,
+                stderr=subprocess.STDOUT
+            )
 
-        self.run()
+        try:
+            self.run()
+        finally:
+            if self.web_process:
+                logging.info("Stopping Web Panel...")
+                self.web_process.terminate()
+                try:
+                    self.web_process.stdout.close()
+                except Exception:
+                    pass
+
 
 
 def main():

@@ -201,15 +201,70 @@ class AttackManager:
             self.logger.debug("Skipping farm target because farm bag limit was reached earlier")
             return 0
 
+        cache_entry = AttackCache.get_cache(target["id"])
+        
+        send_template = template.copy()
+        
+        requires_strict = False
+        was_lost = False
+        last_sent = None
+        
+        try:
+            from core.database import DatabaseManager
+            history = DatabaseManager.get_attack_history(target["id"], limit=1)
+            if history and len(history) > 0:
+                last_attack = history[0]
+                for loss in last_attack.get("losses", []):
+                    if loss.get("side") == "attacker" and loss.get("amount", 0) > 0:
+                        was_lost = True
+                        break
+                if was_lost:
+                    last_sent = last_attack.get("troops_sent")
+                    if isinstance(last_sent, str):
+                        import json
+                        try:
+                            last_sent = json.loads(last_sent)
+                        except Exception:
+                            last_sent = None
+        except ImportError:
+            pass
+            
+        if not was_lost and cache_entry and cache_entry.get("was_lost") and cache_entry.get("last_sent"):
+            was_lost = True
+            last_sent = cache_entry.get("last_sent")
+
+        if was_lost and last_sent:
+            scaled_template = {}
+            for unit, count in last_sent.items():
+                scaled_template[unit] = int(count) + int(template.get(unit, 1))
+                
+            for unit, count in template.items():
+                if unit not in scaled_template:
+                    scaled_template[unit] = int(count)
+                    
+            self.logger.info(
+                "Previous attack to %s suffered losses. Scaling troops: %s -> %s",
+                target["id"], last_sent, scaled_template
+            )
+            send_template = scaled_template
+            requires_strict = True
+
         smart_template = None
         if self.smart_farming:
-            smart_template = self.get_smart_troops(template)
+            smart_template = self.get_smart_troops(send_template)
 
+        missing = False
         if smart_template:
             template = smart_template
-            missing = False
+            if requires_strict and hasattr(self.troopmanager, "carry_capacity"):
+                target_capacity = sum(self.troopmanager.carry_capacity.get(u, 0) * int(c) for u, c in send_template.items())
+                achieved_capacity = sum(self.troopmanager.carry_capacity.get(u, 0) * int(c) for u, c in smart_template.items())
+                if achieved_capacity < target_capacity:
+                    missing = f"Requires capacity {target_capacity}, but only {achieved_capacity} available."
+                    self.logger.info("Farming scale-up failed for %s. %s", target["id"], missing)
         else:
-            missing = self.enough_in_village(template)
+            missing = self.enough_in_village(send_template)
+            template = send_template
 
         if not missing:
             cached = self.can_attack(vid=target["id"], clear=False)

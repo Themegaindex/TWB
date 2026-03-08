@@ -466,8 +466,27 @@ class Extractor:
             res = res.text
         # hide units from other villages
         res = re.sub(r'(?s)<span class="village_anchor.+?</tr>', '', res)
-        data = re.findall(r'(?s)class=\Wunit-item unit-item-([a-z]+)\W.+?(\d+)</td>', res)
-        return data
+        
+        results = []
+        # Find all unit cells
+        # We match the entire <td> to gracefully pull data-unit-count or fallback to text
+        cells = re.findall(r'(<td[^>]*class=[\'"][^\'"]*\bunit-item-([a-z]+)\b[^\'"]*[\'"][^>]*>.*?</td>)', res, re.IGNORECASE | re.DOTALL)
+        
+        for cell_html, unit_type in cells:
+            # Prefer data-unit-count
+            count_match = re.search(r'data-unit-count=["\'](\d+)["\']', cell_html)
+            if count_match:
+                results.append((unit_type, count_match.group(1)))
+            else:
+                # Fallback to text inside td, stripping tags and dots
+                text = re.sub(r'<[^>]+>', '', cell_html)
+                cleaned = re.sub(r'[^\d]', '', text)
+                if cleaned:
+                    results.append((unit_type, cleaned))
+                else:
+                    results.append((unit_type, '0'))
+                    
+        return results
 
     @staticmethod
     def get_farm_bag_state(res):

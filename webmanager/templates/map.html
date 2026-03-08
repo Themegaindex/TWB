@@ -2,96 +2,495 @@
 
 {% block content %}
 <style>
-    #grid {
-      margin-left: auto;
-      margin-right: auto;
-      transform: rotate(-90deg);
-    }
+  :root {
+    --cell: 32px;
+    --grass: #5c8a3c;
+    --barbarian: #8b6914;
+    --owner: #2196f3;
+    --tribe: #43a047;
+    --enemy: #e53935;
+    --empty: #4a7c35;
+    --border: #3a5a28;
+  }
 
-    #grid TR TD{
-      border:1px solid white;
-      background: #FFFFFF;
-      width: 30px;
-      height: 30px;
-      text-align: center;
-    }
+  #map-wrapper {
+    position: relative;
+    overflow: hidden;
+    background: var(--grass);
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    cursor: grab;
+    user-select: none;
+    width: 100%;
+    height: 78vh;
+  }
 
-    #grid TR TD:hover {
-        background: #333333;
-    }
+  #map-wrapper:active {
+    cursor: grabbing;
+  }
 
-    #grid TR TD.owner {
-        background: #00FF00;
-    }
+  #map-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    image-rendering: pixelated;
+  }
 
-    #grid TR TD.enemy {
-        background: #FF0000;
-    }
+  #map-tooltip {
+    position: fixed;
+    background: rgba(0, 0, 0, .85);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.6;
+    pointer-events: none;
+    display: none;
+    z-index: 9999;
+    max-width: 240px;
+    border: 1px solid #888;
+  }
 
-    #grid TR TD.tribe {
-        background: #0001FF;
-    }
+  #map-legend {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, .7);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 2;
+  }
 
-    #grid TR TD.barbarian {
-        background: #AAAAAA;
-    }
+  .legend-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  #village-detail {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #eee;
+    font-size: 13px;
+    padding: 14px;
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  #village-detail h5 {
+    color: #64b5f6;
+    margin-bottom: 10px;
+  }
+
+  #village-detail .stat {
+    margin: 4px 0;
+  }
+
+  #village-detail .stat-label {
+    color: #aaa;
+    font-size: 11px;
+  }
+
+  #village-history {
+    margin-top: 14px;
+  }
+
+  #village-history table {
+    font-size: 11px;
+    width: 100%;
+  }
+
+  #village-history th {
+    color: #90caf9;
+  }
+
+  .loot-bar {
+    height: 6px;
+    background: #2e7d32;
+    border-radius: 3px;
+    margin-top: 2px;
+  }
+
+  #map-controls {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: flex;
+    gap: 6px;
+  }
+
+  .map-btn {
+    background: rgba(0, 0, 0, .65);
+    color: #fff;
+    border: 1px solid #666;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background .2s;
+  }
+
+  .map-btn:hover {
+    background: rgba(255, 255, 255, .15);
+  }
+
+  #coord-display {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, .65);
+    color: #ccc;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
 </style>
-<div class="row">
-    <div class="col-lg-10">
-        <table id="grid"></table>
-    </div>
-    <div class="col-lg-2">
-        <h4 id="v_name"></h4>
-        <p id="v_data"></p>
-    </div>
 
+<div class="row" style="height:85vh;">
+  <!-- Map panel -->
+  <div class="col-lg-9 col-md-8" style="height:100%; padding-right:4px;">
+    <div id="map-wrapper">
+      <canvas id="map-canvas"></canvas>
+      <div id="map-tooltip"></div>
+      <div id="map-legend">
+        <span class="legend-dot" style="background:var(--owner)"></span> Your village<br>
+        <span class="legend-dot" style="background:var(--tribe)"></span> Tribe member<br>
+        <span class="legend-dot" style="background:var(--enemy)"></span> Enemy<br>
+        <span class="legend-dot" style="background:var(--barbarian)"></span> Barbarian<br>
+        <span class="legend-dot" style="background:var(--empty)"></span> Empty
+      </div>
+      <div id="map-controls">
+        <button class="map-btn" id="zoom-in">＋</button>
+        <button class="map-btn" id="zoom-out">－</button>
+        <button class="map-btn" id="zoom-reset">⌂</button>
+      </div>
+      <div id="coord-display">x:— y:—</div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="col-lg-3 col-md-4" style="height:100%; padding-left:4px; overflow-y:auto;">
+    <div id="village-detail">
+      <p style="color:#666;">Click a village on the map to see details.</p>
+    </div>
+  </div>
 </div>
+
 <script>
-	var map_data = {{map | safe}}
-    function generateGrid(x, y, data) {
-      grid.innerHTML="";
-      for (var i=0; i<x; i++) {
-        row = grid.insertRow(i);
-        for (var j=0; j<y; j++) {
-          cell = row.insertCell(j);
+  /* =====================================================================
+     TWB Interactive Map  –  canvas renderer
+     ===================================================================== */
+  const RAW = {{ map | safe }};
+  const GRID = RAW.grid;
+  const EXTRA = RAW.extra || {};
+  const CELL = 32;          // base cell size in px
 
-          if(i in data.grid && j in data.grid[i] && data.grid[i][j]) {
-            var village = data.grid[i][j];
-            cell.onclick = function() { clickCell(this); };
-            cell.onmouseover = function() { clickCell(this); };
-            if(village.owner != "0") {
-                cell.setAttribute("village", JSON.stringify(village));
-                if(data.extra && village.owner == data.extra.owner) {
-                    cell.setAttribute("class", "owner");
-                } else if(data.extra && data.extra.tribe != "0" && data.extra.tribe == village.tribe) {
-                    cell.setAttribute("class", "tribe");
-                } else {
-                    cell.setAttribute("class", "enemy");
-                }
-            } else {
-                cell.setAttribute("class", "barbarian");
-            }
-          }
+  const C = document.getElementById('map-canvas');
+  const CTX = C.getContext('2d');
+  const WRAPPER = document.getElementById('map-wrapper');
+  const TOOLTIP = document.getElementById('map-tooltip');
+  const COORD = document.getElementById('coord-display');
+  const DETAIL = document.getElementById('village-detail');
 
+  // ---- colours ---------------------------------------------------------
+  const COL = {
+    empty: '#4a7c35',
+    grass: '#5c8a3c',
+    border: '#3a5a28',
+    barbarian: '#8b6914',
+    owner: '#1565c0',
+    tribe: '#2e7d32',
+    enemy: '#b71c1c',
+    text: '#fff',
+  };
+
+  // ---- state -----------------------------------------------------------
+  let scale = 1.0;
+  let offsetX = 0;
+  let offsetY = 0;
+  let isDragging = false;
+  let dragStart = { x: 0, y: 0 };
+  let dragOffset = { x: 0, y: 0 };
+
+  const xs = Object.keys(GRID).map(Number).sort((a, b) => a - b);
+  const ys = xs.length ? Object.keys(GRID[xs[0]]).map(Number).sort((a, b) => a - b) : [];
+  const W = xs.length;
+  const H = ys.length;
+
+  // ---- icons (tiny base-64 so no extra HTTP round-trips) ---------------
+  // House icon for own village, sword for others
+  function drawVillage(ctx, x, y, size, type) {
+    const s = size - 4;
+    const ox = x + 2, oy = y + 2;
+
+    // Background square
+    ctx.fillStyle = type === 'empty' ? COL.empty : COL.grass;
+    ctx.fillRect(x, y, size, size);
+
+    // Village icon
+    if (type === 'empty') return;
+
+    ctx.fillStyle = COL[type] || COL.enemy;
+    // Hut body
+    const bw = Math.max(4, s * 0.55), bh = Math.max(3, s * 0.35);
+    const bx = ox + (s - bw) / 2, by = oy + s * 0.5;
+    ctx.fillRect(bx, by, bw, bh);
+
+    // Roof triangle
+    ctx.beginPath();
+    ctx.moveTo(ox + s / 2, oy + s * 0.1);
+    ctx.lineTo(ox + s * 0.1, oy + s * 0.55);
+    ctx.lineTo(ox + s * 0.9, oy + s * 0.55);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // ---- resize canvas ---------------------------------------------------
+  function resize() {
+    C.width = WRAPPER.clientWidth;
+    C.height = WRAPPER.clientHeight;
+    draw();
+  }
+
+  // ---- main draw -------------------------------------------------------
+  function draw() {
+    const cs = Math.floor(CELL * scale);
+    CTX.clearRect(0, 0, C.width, C.height);
+
+    // background
+    CTX.fillStyle = COL.grass;
+    CTX.fillRect(0, 0, C.width, C.height);
+
+    for (let xi = 0; xi < xs.length; xi++) {
+      const col = GRID[xs[xi]];
+      for (let yi = 0; yi < ys.length; yi++) {
+        const px = Math.round(xi * cs + offsetX);
+        const py = Math.round(yi * cs + offsetY);
+        if (px + cs < 0 || px > C.width || py + cs < 0 || py > C.height) continue;
+
+        const vil = col ? col[ys[yi]] : null;
+
+        // cell border
+        CTX.strokeStyle = COL.border;
+        CTX.lineWidth = 0.5;
+        CTX.strokeRect(px, py, cs, cs);
+
+        if (!vil) {
+          CTX.fillStyle = COL.empty;
+          CTX.fillRect(px, py, cs, cs);
+          continue;
+        }
+
+        let type = 'barbarian';
+        if (vil.owner && vil.owner !== '0') {
+          if (EXTRA.owner && vil.owner === EXTRA.owner) type = 'owner';
+          else if (EXTRA.tribe && EXTRA.tribe !== '0' && vil.tribe === EXTRA.tribe) type = 'tribe';
+          else type = 'enemy';
+        }
+
+        drawVillage(CTX, px, py, cs, type);
+
+        // village name label (only when big enough)
+        if (cs >= 28 && vil.name) {
+          CTX.fillStyle = COL.text;
+          CTX.font = `${Math.max(7, cs * 0.22)}px sans-serif`;
+          CTX.textAlign = 'center';
+          CTX.fillText(vil.name.substring(0, 10), px + cs / 2, py + cs - 4);
+        }
+
+        // report count (yellow badge)
+        if (vil.report_count && vil.report_count > 0) {
+          CTX.fillStyle = '#ffeb3b';
+          CTX.font = `bold ${Math.max(9, cs * 0.3)}px sans-serif`;
+          CTX.textAlign = 'right';
+          CTX.fillText(vil.report_count, px + cs - 2, py + Math.max(10, cs * 0.3) + 2);
         }
       }
     }
+  }
 
-    generateGrid(Object.keys(map_data.grid).length, Object.keys(map_data.grid).length, map_data);
+  // ---- coordinate from canvas px ---------------------------------------
+  function cellFromPx(px, py) {
+    const cs = Math.floor(CELL * scale);
+    const xi = Math.floor((px - offsetX) / cs);
+    const yi = Math.floor((py - offsetY) / cs);
+    if (xi < 0 || xi >= xs.length || yi < 0 || yi >= ys.length) return null;
+    const col = GRID[xs[xi]];
+    const vil = col ? col[ys[yi]] : null;
+    return { xi, yi, vil, world_x: xs[xi], world_y: ys[yi] };
+  }
 
-    function clickCell(cell) {
-        var village_data = $(cell).attr("village");
-        if(!village_data) return;
-        var data = JSON.parse(village_data);
-        $('#v_name').text(data.name);
-
-        var output = '';
-        $.each(data, function(k, v){
-            if(jQuery.type(v) !== "object") {
-                output += '<strong>' + k + '</strong> ' + v + '<br />';
-            }
-        });
-        $('#v_data').html(output);
+  // ---- tooltip ---------------------------------------------------------
+  WRAPPER.addEventListener('mousemove', e => {
+    const rect = WRAPPER.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const info = cellFromPx(mx, my);
+    if (info) {
+      COORD.textContent = `x:${info.world_x} y:${info.world_y}`;
+      if (info.vil) {
+        let extraInfo = '';
+        if (info.vil.recent_attack) {
+          let a = info.vil.recent_attack;
+          let lostStr = '-';
+          if (a.was_lost === true) {
+            lostStr = '<span style="color:#ef9a9a">Yes</span>';
+          } else if (a.was_lost === false) {
+            lostStr = '<span style="color:#81c784">No</span>';
+          }
+          extraInfo += '<br>Lost previous: ' + lostStr;
+          if (a.last_losses && Object.keys(a.last_losses).length > 0) {
+            let unitsLost = Object.entries(a.last_losses).map(en => en[0] + ': ' + en[1]).join(', ');
+            extraInfo += '<br>Units lost: <span style="color:#ef9a9a">' + unitsLost + '</span>';
+          }
+        }
+        TOOLTIP.style.display = 'block';
+        TOOLTIP.style.left = (e.clientX + 14) + 'px';
+        TOOLTIP.style.top = (e.clientY + 14) + 'px';
+        TOOLTIP.innerHTML = `<b>${info.vil.name || '?'}</b><br>
+        Points: ${info.vil.points || 0}<br>
+        Reports: ${info.vil.report_count || 0}<br>
+        Coords: ${info.world_x}|${info.world_y}${extraInfo}`;
+      } else {
+        TOOLTIP.style.display = 'none';
+      }
+    } else {
+      TOOLTIP.style.display = 'none';
+      COORD.textContent = 'x:— y:—';
     }
+  });
+  WRAPPER.addEventListener('mouseleave', () => { TOOLTIP.style.display = 'none'; });
+
+  // ---- click for detail panel ------------------------------------------
+  WRAPPER.addEventListener('click', e => {
+    if (Math.abs(e.clientX - dragStart.x) > 4 || Math.abs(e.clientY - dragStart.y) > 4) return;
+    const rect = WRAPPER.getBoundingClientRect();
+    const info = cellFromPx(e.clientX - rect.left, e.clientY - rect.top);
+    if (!info || !info.vil) return;
+    showDetail(info.vil, info.world_x, info.world_y);
+  });
+
+  function showDetail(v, wx, wy) {
+    DETAIL.innerHTML = `
+    <h5>📍 ${v.name || 'No name'}</h5>
+    <div class="stat"><span class="stat-label">Coordinates</span><br>${wx}|${wy}</div>
+    <div class="stat"><span class="stat-label">Points</span><br>${v.points || 0}</div>
+    <div class="stat"><span class="stat-label">Owner ID</span><br>${v.owner || '0'}</div>
+    <div class="stat"><span class="stat-label">Tribe ID</span><br>${v.tribe || '—'}</div>
+    <div id="village-history">
+      <p style="color:#666;font-size:11px;">⏳ Loading attack history…</p>
+    </div>`;
+
+    if (v.id) {
+      fetch(`/api/village_attacks?vid=${v.id}`)
+        .then(r => r.json())
+        .then(data => renderHistory(data))
+        .catch(() => { document.getElementById('village-history').innerHTML = '<p style="color:#666;font-size:11px;">No history available</p>'; });
+    }
+  }
+
+  function renderHistory(data) {
+    const el = document.getElementById('village-history');
+    if (!el) return;
+    if (!data || !data.attacks || !data.attacks.length) {
+      el.innerHTML = '<p style="color:#666;font-size:11px;">No attack history in DB</p>';
+      if (data && data.production) {
+        el.innerHTML += renderProduction(data.production);
+      }
+      return;
+    }
+    const maxLoot = Math.max(...data.attacks.map(a => a.loot_total || 0), 1);
+    let rows = data.attacks.slice(0, 15).map(a => {
+      const won = a.won === null ? '?' : (a.won ? '✅' : '❌');
+      const lootPct = Math.round((a.loot_total || 0) / maxLoot * 100);
+      return `<tr>
+      <td>${(a.sent_at || '').substring(5, 16)}</td>
+      <td>${won}</td>
+      <td>${(a.loot_total || 0).toLocaleString()}<div class="loot-bar" style="width:${lootPct}%"></div></td>
+    </tr>`;
+    }).join('');
+
+    let html = `<h6 style="color:#90caf9;margin-top:12px;">⚔️ Attack History (${data.attacks.length})</h6>
+  <table class="table table-sm table-dark">
+    <thead><tr><th>Date</th><th>Won</th><th>Loot</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+
+    if (data.production) html += renderProduction(data.production);
+    if (data.losses && data.losses.length) html += renderLosses(data.losses);
+
+    el.innerHTML = html;
+  }
+
+  function renderProduction(prod) {
+    if (!prod) return '';
+    return `<div style="margin-top:10px;padding:8px;background:#1a3a1a;border-radius:4px;">
+    <b style="color:#81c784;">🌾 Est. Production/h</b><br>
+    🪵 Wood: ${prod.wood || 0} &nbsp; ⛏ Stone: ${prod.stone || 0} &nbsp; ⚙ Iron: ${prod.iron || 0}
+  </div>`;
+  }
+
+  function renderLosses(losses) {
+    const rows = losses.map(l => `<tr><td>${l.unit}</td><td>${l.side}</td><td>${l.amount}</td></tr>`).join('');
+    return `<h6 style="color:#ef9a9a;margin-top:12px;">💀 units Lost</h6>
+  <table class="table table-sm table-dark">
+    <thead><tr><th>Unit</th><th>Side</th><th>Amt</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  }
+
+  // ---- drag to pan -----------------------------------------------------
+  WRAPPER.addEventListener('mousedown', e => {
+    isDragging = true;
+    dragStart = { x: e.clientX, y: e.clientY };
+    dragOffset = { x: offsetX, y: offsetY };
+  });
+  window.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    offsetX = dragOffset.x + (e.clientX - dragStart.x);
+    offsetY = dragOffset.y + (e.clientY - dragStart.y);
+    draw();
+  });
+  window.addEventListener('mouseup', () => { isDragging = false; });
+
+  // ---- mouse-wheel zoom ------------------------------------------------
+  WRAPPER.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = WRAPPER.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const delta = e.deltaY > 0 ? 0.85 : 1 / 0.85;
+    const newScale = Math.max(0.25, Math.min(4, scale * delta));
+    offsetX = mx - (mx - offsetX) * (newScale / scale);
+    offsetY = my - (my - offsetY) * (newScale / scale);
+    scale = newScale;
+    draw();
+  }, { passive: false });
+
+  // ---- buttons ---------------------------------------------------------
+  document.getElementById('zoom-in').onclick = () => { scale = Math.min(4, scale * 1.25); draw(); };
+  document.getElementById('zoom-out').onclick = () => { scale = Math.max(0.25, scale * 0.8); draw(); };
+  document.getElementById('zoom-reset').onclick = () => {
+    const cs = Math.floor(CELL * 1.0);
+    scale = 1.0;
+    offsetX = Math.round((C.width - W * cs) / 2);
+    offsetY = Math.round((C.height - H * cs) / 2);
+    draw();
+  };
+
+  // ---- centre map initially -------------------------------------------
+  window.addEventListener('resize', resize);
+  resize();
+  // centre
+  const initCS = Math.floor(CELL * scale);
+  offsetX = Math.round((C.width - W * initCS) / 2);
+  offsetY = Math.round((C.height - H * initCS) / 2);
+  draw();
 </script>
 {% endblock %}
