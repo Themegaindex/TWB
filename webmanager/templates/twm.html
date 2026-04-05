@@ -1,0 +1,49 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="card bg-dark text-white mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>TribalWarsMap.com - {{ server }}</span>
+                <div>
+                    <button id="sync-twm-btn" class="btn btn-sm btn-outline-info">Sync Session (Experimental)</button>
+                    <a href="https://{{ server }}.tribalwarsmap.com/pl/" target="_blank" class="btn btn-sm btn-outline-light">Open in New Tab</a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <iframe src="https://{{ server }}.tribalwarsmap.com/pl/" 
+                        style="width: 100%; height: 85vh; border: none;" 
+                        id="twm-iframe">
+                </iframe>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('sync-twm-btn').addEventListener('click', function() {
+    if (!confirm('This will attempt to sync your bot session with TribalWarsMap. It might take a few seconds. Continue?')) return;
+    
+    const btn = this;
+    btn.disabled = true;
+    btn.innerText = 'Syncing...';
+    
+    fetch('/api/twm_sync', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            alert(data.message || (data.ok ? 'Sync successful!' : 'Sync failed.'));
+            if (data.ok) {
+                document.getElementById('twm-iframe').src = document.getElementById('twm-iframe').src;
+            }
+        })
+        .catch(err => {
+            alert('Error: ' + err);
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerText = 'Sync Session (Experimental)';
+        });
+});
+</script>
+{% endblock %}

@@ -49,14 +49,51 @@ class Extractor:
     @staticmethod
     def game_state(res):
         """
-        Detects the game state that is available on most pages
+        Detects the game state that is available on most pages.
+        Now supports both TribalWars.updateGameData call and raw game_data variable.
+        Uses greedy brace matching to handle cases where parentheses exist inside JSON strings
+        (e.g., coordinates in village names).
         """
         if type(res) != str:
             res = res.text
-        grabber = re.search(r'TribalWars\.updateGameData\((.+?)\);', res)
+            
+        # Try primary TribalWars.updateGameData call - conservatively match until the first );
+        grabber = re.search(r'TribalWars\.updateGameData\(\s*(.*?)\s*\);', res, re.DOTALL)
         if grabber:
-            data = grabber.group(1)
-            return json.loads(data, strict=False)
+            try:
+                data = grabber.group(1)
+                return json.loads(data, strict=False)
+            except (json.JSONDecodeError, ValueError) as e:
+                import logging
+                logging.getLogger("Extractor").error(f"JSON Decode error in updateGameData: {str(e)} - Snippet: {data[:100]}")
+                pass
+                
+        # Try raw game_data or window.game_data variable
+        grabber = re.search(r'(?:var|window\.)game_data\s*=\s*(.*?)\s*;', res, re.DOTALL)
+        if grabber:
+            # Try non-greedy match to the first trailing semicolon
+            for group_idx in [1]:
+                try:
+                    if not grabber.group(group_idx): continue
+                    return json.loads(grabber.group(group_idx), strict=False)
+                except (json.JSONDecodeError, ValueError, IndexError) as e:
+                    import logging
+                    logging.getLogger("Extractor").error(f"JSON Decode error in raw game_data: {str(e)}")
+                    continue
+        
+        # Fallback: look for screen parameter anywhere in JSON-like structure
+        match = re.search(r'"screen"\s*:\s*"([^"]+)"', res)
+        if match:
+             return {"screen": match.group(1), "village": {"id": 0}}
+
+        # If everything fails, dump the HTML
+        try:
+            with open("cache/logs/failed_gamestate.html", "w", encoding="utf-8") as f:
+                f.write(res)
+        except Exception:
+            pass
+
+        return None
 
     @staticmethod
     def building_data(res):
@@ -222,6 +259,48 @@ class Extractor:
             res = res.text
         builder = re.findall(r'(?s)TrainOverview\.cancelOrder\((\d+)\)', res)
         return builder
+
+    @staticmethod
+    def active_recruit_queue_detailed(res):
+        """
+        Extracts detailed recruitment queue information: unit types and amounts.
+        Works by parsing the recruitment table usually found on barracks/stable/workshop pages.
+        """
+        if type(res) != str:
+            res = res.text
+        
+        # Pattern for recruitment rows in the queue table
+        # Each row usually contains unit icon/name, count, and a cancel button with order ID
+        queue = []
+        
+        # 1. Find the table
+        table_match = re.search(r'<table[^>]*class=["\']vis["\'][^>]*>(.*?)</table>', res, re.DOTALL)
+        if not table_match:
+            return []
+            
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_match.group(1), re.DOTALL)
+        for row in rows:
+            # Look for unit type (from image)
+            unit_match = re.search(r'unit_([a-z]+)\.webp', row)
+            if not unit_match:
+                unit_match = re.search(r'unit_([a-z]+)\.png', row)
+                
+            # Look for quantity (usually first bold number or number followed by unit name)
+            count_match = re.search(r'(\d+)\s+<span class="grey">', row) # "500 <span class='grey'>Zwiadowców</span>"
+            if not count_match:
+                count_match = re.search(r'(\d+)\s+[A-Z][a-z]+', row) # "500 Zwiadowców"
+
+            # Look for order ID
+            order_match = re.search(r'TrainOverview\.cancelOrder\((\d+)\)', row)
+            
+            if unit_match and count_match and order_match:
+                queue.append({
+                    "unit": unit_match.group(1),
+                    "amount": int(count_match.group(1)),
+                    "order_id": order_match.group(1)
+                })
+        
+        return queue
 
     @staticmethod
     def village_ids_from_game_data(res) -> List[str]:
@@ -464,10 +543,27 @@ class Extractor:
         """
         if type(res) != str:
             res = res.text
-        # hide units from other villages
-        res = re.sub(r'(?s)<span class="village_anchor.+?</tr>', '', res)
-        data = re.findall(r'(?s)class=\Wunit-item unit-item-([a-z]+)\W.+?(\d+)</td>', res)
-        return data
+        
+        results = []
+        # Find all unit cells
+        # We match the entire <td> to gracefully pull data-unit-count or fallback to text
+        cells = re.findall(r'(<td[^>]*class=[\'"][^\'"]*\bunit-item-([a-z]+)\b[^\'"]*[\'"][^>]*>.*?</td>)', res, re.IGNORECASE | re.DOTALL)
+        
+        for cell_html, unit_type in cells:
+            # Prefer data-unit-count
+            count_match = re.search(r'data-unit-count=["\'](\d+)["\']', cell_html)
+            if count_match:
+                results.append((unit_type, count_match.group(1)))
+            else:
+                # Fallback to text inside td, stripping tags and dots
+                text = re.sub(r'<[^>]+>', '', cell_html)
+                cleaned = re.sub(r'[^\d]', '', text)
+                if cleaned:
+                    results.append((unit_type, cleaned))
+                else:
+                    results.append((unit_type, '0'))
+                    
+        return results
 
     @staticmethod
     def get_farm_bag_state(res):
@@ -519,13 +615,24 @@ class Extractor:
     @staticmethod
     def attack_form(res):
         """
-        Detects input fiels in the attack form
+        Detects input fields in the attack form
         ... because there are many :)
+        Supports fields where value might come before name or vice versa.
         """
         if type(res) != str:
             res = res.text
-        data = re.findall(r'(?s)<input.+?name="(.+?)".+?value="(.*?)"', res)
-        return data
+            
+        # Match input tags and extract name and value attributes regardless of order
+        results = []
+        input_tags = re.findall(r'<input[^>]+>', res, re.IGNORECASE)
+        for tag in input_tags:
+            name_match = re.search(r'name=["\'](.*?)["\']', tag, re.IGNORECASE)
+            value_match = re.search(r'value=["\'](.*?)["\']', tag, re.IGNORECASE)
+            if name_match:
+                name = name_match.group(1)
+                value = value_match.group(1) if value_match else ""
+                results.append((name, value))
+        return results
 
     @staticmethod
     def attack_duration(res):

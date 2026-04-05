@@ -5,3 +5,9 @@ flask
 pyquery
 beautifulsoup4
 python-telegram-bot
+SQLAlchemy>=2.0.0
+flask-cors
+psycopg2-binary~=2.9.9
+pandas
+httpx
+asyncpg

@@ -13,13 +13,10 @@ class DefenceManager:
     map = None
 
     under_attack = False
-    auto_evacuate = False
     attacks = []
 
     # list of village_id, attack_state
     my_other_villages = {}
-    allow_support_send = True
-    allow_support_recv = True
 
     defensive_units = ["spear", "sword", "archer", "marcher", "spy"]
 
@@ -30,8 +27,6 @@ class DefenceManager:
     runs = 0
     logger = None
     manage_flags_enabled = True
-    support_factor = 0.25
-    support_max_villages = 2
 
     # flag_index, flag_level
     current_flag = []
@@ -51,6 +46,11 @@ class DefenceManager:
         self.village_id = village_id
         self.wrapper = wrapper
         self.logger = logging.getLogger("Defence Manager")
+        self.support_factor = 0.25
+        self.support_max_villages = 2
+        self.allow_support_send = True
+        self.allow_support_recv = True
+        self.auto_evacuate = False
 
     def support_other(self, requesting_village):
 

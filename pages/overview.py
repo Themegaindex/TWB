@@ -251,11 +251,45 @@ class OverviewPage:
             str: The screen type ('overview', 'overview_villages', or 'unknown')
         """
         try:
+            from core.extractors import Extractor
             text = self.result_get.text
-            # Look for the screen parameter in the game data JSON
-            match = re.search(r'"screen"\s*:\s*"([^"]+)"', text)
-            if match:
-                return match.group(1)
+            
+            # 1. Look for the screen parameter in the game data JSON using core extractor
+            game_data = Extractor.game_state(text)
+            if game_data and "screen" in game_data:
+                return game_data["screen"]
+            
+            # 2. Fallback to raw URL parameters or other identifiers
+            if 'screen=overview_villages' in text:
+                return 'overview_villages'
+            if 'screen=overview' in text:
+                return 'overview'
+            
+            # 3. Enhanced bot/security detection
+            bot_identifiers = [
+                'data-bot-protect', 
+                'screen=bot_protect', 
+                'bot_protection', 
+                'captcha', 
+                'security_check',
+                'p_sid_bot',
+                'id="bot_check"',
+                'bot_check'
+            ]
+            if any(ident in text.lower() for ident in bot_identifiers):
+                return 'bot_protection'
+            
+            # 4. Check for login screen before broad language checks
+            if 'login_form' in text or 'id="login_button"' in text:
+                return 'login_screen'
+            
+            # 5. Check for world/server specific identifiers
+            # (e.g., Polish language specifically if translations exist in HTML)
+            if 'Weryfikacja bota' in text or 'Weryfikacja gracza' in text:
+                 return 'bot_protection'
+            if 'Weryfikacja' in text and ('bot' in text.lower() or 'security' in text.lower()):
+                 return 'bot_protection'
+            
         except Exception as e:
             logger.error(f"Error detecting screen type: {e}")
 

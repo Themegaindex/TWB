@@ -4,18 +4,39 @@ import sys
 sys.path.insert(0, "../")
 
 from flask import Flask, jsonify, send_from_directory, request, render_template
+from flask_cors import CORS
 
 try:
     from webmanager.helpfile import help_file, buildings
-    from webmanager.utils import DataReader, BotManager, MapBuilder, BuildingTemplateManager
+    from webmanager.utils import DataReader, BotManager, MapBuilder, TemplateManager
 except ImportError:
     from helpfile import help_file, buildings
-    from utils import DataReader, BotManager, MapBuilder, BuildingTemplateManager
+    from utils import DataReader, BotManager, MapBuilder, TemplateManager
+
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from core.database import DatabaseManager
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
 
 bm = BotManager()
 
 app = Flask(__name__)
-app.config["DEBUG"] = True
+CORS(app, resources={r"/*": {"origins": "*"}})
+app.config["DEBUG"] = os.environ.get("FLASK_DEBUG", "0") == "1"
+
+@app.after_request
+def add_pna_headers(response):
+    """ Allow Chrome Private Network Access (PNA) preflights and CORS """
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    # Ensure preflight (OPTIONS) returns 200 for PNA
+    if request.method == 'OPTIONS':
+        response.status_code = 200
+    return response
 
 
 def pre_process_bool(key, value, village_id=None):
@@ -124,7 +145,7 @@ def pre_process_village_config(village_id):
     if village_id in config:
         config = config[village_id]
     else:
-        config = config[config.keys()[0]]
+        config = config[next(iter(config.keys()))]
     config_data = ""
     for parameter in config:
         value = config[parameter]
@@ -148,8 +169,45 @@ def sync():
     managed = DataReader.cache_grab("managed")
     bot_status = bm.is_running()
 
-    sort_reports = {key: value for key, value in sorted(reports.items(), key=lambda item: int(item[0]))}
-    n_items = {k: sort_reports[k] for k in list(sort_reports)[:100]}
+    def parse_report_id(r_id):
+        try:
+            return int(r_id)
+        except ValueError:
+            nums = ''.join(filter(str.isdigit, str(r_id)))
+            return int(nums) if nums else 0
+
+    # Sort reports by ID descending (newest first)
+    sorted_reports_keys = sorted(reports.keys(), key=parse_report_id, reverse=True)
+    n_items = {}
+    
+    for r_id in sorted_reports_keys[:100]:
+        r_data = reports[r_id]
+        
+        # Normalize: Handle legacy or "naked" report formats
+        if "extra" not in r_data:
+            # If it's naked, the whole object is the extra data
+            # Try to deduce type and dest if possible
+            r_data = {
+                "type": r_data.get("type", "unknown"),
+                "dest": r_data.get("dest", r_data.get("target_id", "Unknown")),
+                "origin": r_data.get("origin", r_data.get("origin_id", "")),
+                "losses": r_data.get("losses", {}),
+                "extra": r_data
+            }
+        
+        # Add village name if available in our village cache
+        if "dest" in r_data and r_data["dest"] in villages:
+            r_data["dest_name"] = villages[r_data["dest"]].get("name", r_data["dest"])
+        else:
+            r_data["dest_name"] = r_data.get("dest", "Unknown")
+
+        n_items[r_id] = r_data
+
+    report_counts = {}
+    for r_id, r_data in reports.items():
+        dest = r_data.get('dest') if isinstance(r_data, dict) else None
+        if dest:
+            report_counts[dest] = report_counts.get(dest, 0) + 1
 
     out_struct = {
         "attacks": attacks,
@@ -166,6 +224,244 @@ def sync():
 def get_vars():
     return jsonify(sync())
 
+
+@app.route('/api/village_attacks', methods=['GET'])
+def api_village_attacks():
+    """
+    Returns full attack history + production estimate for a given village.
+    Frontend map uses this for the detail panel.
+    """
+    vid = request.args.get('vid', None)
+    if not vid:
+        return jsonify({'error': 'vid required'}), 400
+    if not _DB_OK:
+        return jsonify({'error': 'database not available'}), 503
+
+    attacks  = DatabaseManager.get_attack_history(vid, limit=50)
+    village  = DatabaseManager.get_village(vid)
+    prod     = None
+    if village:
+        prod = {
+            'wood':  village.get('wood_prod', 0),
+            'stone': village.get('stone_prod', 0),
+            'iron':  village.get('iron_prod', 0),
+        }
+
+    # Collect all losses across these attacks
+    losses = []
+    for a in attacks:
+        for l in a.get('losses', []):
+            losses.append(l)
+
+    latest_report = DatabaseManager.get_latest_report(vid)
+
+    return jsonify({
+        'attacks': attacks,
+        'production': prod,
+        'losses': losses,
+        'latest_report': latest_report
+    })
+
+
+@app.route('/api/cookie_webhook', methods=['POST'])
+def cookie_webhook():
+    """
+    Webhook endpoint called by the browser extension.
+    Receives a JSON body: { "cookies": "sid=xxx; pl_auth=yyy; ...", "endpoint": "https://pl227.plemiona.pl/game.php" }
+    Updates the local session cache so the bot uses the fresh cookie without restart.
+    """
+    data = request.get_json(force=True, silent=True)
+    if not data or 'cookies' not in data:
+        return jsonify({'ok': False, 'error': 'missing cookies field'}), 400
+
+    raw_cookie  = data['cookies'].strip()
+    endpoint    = data.get('endpoint', '')
+
+    # Parse cookies string into dict for logging/fallback
+    cookies = {}
+    for part in raw_cookie.split(';'):
+        part = part.strip()
+        if '=' in part:
+            k, _, v = part.partition('=')
+            cookies[k.strip()] = v.strip()
+
+    try:
+        from core.database import DatabaseManager, DBSession
+        db_s = DatabaseManager._session()
+        if db_s:
+            # Clear old and write new
+            db_s.query(DBSession).delete()
+            
+            user_agent_str = data.get('userAgent', '')
+            
+            new_sess = DBSession(
+                endpoint=endpoint,
+                server=endpoint.split("//")[1].split(".")[0] if "//" in endpoint else "",
+                cookies=cookies,
+                user_agent=user_agent_str
+            )
+            db_s.add(new_sess)
+            db_s.commit()
+            db_s.close()
+        
+        return jsonify({'ok': True, 'message': 'Session updated in DB', 'cookies_count': len(cookies)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/plugin_report', methods=['POST'])
+def api_plugin_report():
+    """
+    Receives raw report HTML directly from the browser plugin.
+    Verifies if report exists, if not, parses it using ReportManager.
+    """
+    data = request.get_json(force=True, silent=True)
+    if not data or 'html' not in data or 'report_id' not in data:
+        return jsonify({'ok': False, 'message': 'Brak HTML lub ID raportu'}), 400
+        
+    report_id = str(data['report_id'])
+    html = data['html']
+    
+    import logging
+    log = logging.getLogger("PluginReport")
+    
+    from core.database import DatabaseManager
+    # Check if report already exists in DB
+    if hasattr(DatabaseManager, "get_report") and DatabaseManager.get_report(report_id):
+        log.info(f"Raport {report_id} otrzymał ping z wtyczki, ale już był w bazie.")
+        return jsonify({'ok': True, 'message': 'Raport już jest (Pominięto).'})
+        
+    try:
+        from game.reports import ReportManager
+        import re
+        rm = ReportManager(wrapper=None, village_id="0")
+        rm.logger = log
+        
+        get_type = re.search(r'class="report_(\w+)', html)
+        if not get_type:
+            log.warning(f"Nie udało się wczytać raportu {report_id}: zły / nie znana struktura html")
+            return jsonify({'ok': False, 'message': 'Nie znana struktura html'}), 400
+            
+        report_type = get_type.group(1)
+        if report_type == "ReportAttack":
+            # The attack_report function internally inserts to DB if successful
+            rm.attack_report(html, report_id)
+            log.info(f"Raport {report_id} został POMYŚLNIE zaczytany i zaktualizowany!")
+            return jsonify({'ok': True, 'message': 'Raport zaczytany (Atak).'})
+        else:
+            log.info(f"Odebrano z wtyczki strukturę raportu ignorowanego typu: {report_type}")
+            return jsonify({'ok': True, 'message': f'Zignorowano typ: {report_type}'})
+            
+    except Exception as e:
+        log.error(f"Nie udało się wczytać raportu {report_id} poprzez parsowanie struktury: złe komponenty? Błąd: {e}")
+        return jsonify({'ok': False, 'message': f'Błąd wczytywania: {str(e)}'}), 500
+
+@app.route('/api/plugin/map', methods=['POST'])
+def api_plugin_map():
+    """
+    Receives raw map data chunks directly from the browser plugin.
+    Mass UPSERTS villages into PostgreSQL to keep the bot's map cache live without extra traffic.
+    """
+    data = request.get_json(force=True, silent=True)
+    if not data or 'villages' not in data:
+        return jsonify({'ok': False, 'message': 'Brak danych mapy'}), 400
+        
+    try:
+        from core.database import DatabaseManager, DBVillage
+        from sqlalchemy.dialects.postgresql import insert
+        from datetime import datetime
+        
+        db_s = DatabaseManager._session()
+        if not db_s:
+            return jsonify({'ok': False, 'message': 'DB Error'}), 500
+            
+        updated = 0
+        for v in data['villages']:
+            # Upsert logic
+            stmt = insert(DBVillage).values(
+                id=str(v.get('id')),
+                name=v.get('name', ''),
+                x=int(v.get('x', 0)),
+                y=int(v.get('y', 0)),
+                points=int(v.get('points', 0)),
+                owner_id=str(v.get('owner', '0')),
+                last_seen=datetime.utcnow()
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['id'],
+                set_={
+                    'name': stmt.excluded.name,
+                    'points': stmt.excluded.points,
+                    'owner_id': stmt.excluded.owner_id,
+                    'last_seen': stmt.excluded.last_seen
+                }
+            )
+            db_s.execute(stmt)
+            updated += 1
+            
+        db_s.commit()
+        db_s.close()
+        
+        import logging
+        log = logging.getLogger("PluginMap")
+        log.info(f"Odebrano z wtyczki i zaktualizowano {updated} wiosek na naszej lokalnej mapie!")
+        
+        return jsonify({'ok': True, 'message': f'Zaktualizowano {updated} wiosek z mapy'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/force_reports', methods=['POST'])
+def api_force_reports():
+    """
+    Trigger reading backwards historical reports for statistics.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        pages = str(data.get('pages', 5))
+        import subprocess
+        script_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'force_read_reports.py')
+        if not os.path.exists(script_path):
+            return jsonify({'ok': False, 'message': 'Skrypt scripts/force_read_reports.py nie istnieje.'}), 404
+            
+        subprocess.Popen([sys.executable, script_path, pages], cwd=os.path.join(os.path.dirname(__file__), '..'))
+        return jsonify({'ok': True, 'message': f'Pobieranie {pages} stron historycznych raportów rozpoczęte w tle. Zobacz logi w konsoli.'})
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """ Returns last 100 lines of the bot.log file """
+    log_path = os.path.join(os.path.dirname(__file__), '..', 'cache', 'bot.log')
+    if not os.path.exists(log_path):
+        return jsonify({'logs': 'Brak logów.'})
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            return jsonify({'logs': ''.join(lines[-200:])})
+    except Exception as e:
+        return jsonify({'logs': f'Error reading log: {str(e)}'})
+
+@app.route('/api/logs/download', methods=['GET'])
+def download_logs():
+    """ Downloads the entire bot.log file """
+    cache_dir = os.path.join(os.path.dirname(__file__), '..', 'cache')
+    return send_from_directory(cache_dir, 'bot.log', as_attachment=True)
+
+@app.route('/api/logs/web', methods=['GET'])
+def get_web_logs():
+    """ Returns last 200 lines of the webmanager.log file """
+    log_path = os.path.join(os.path.dirname(__file__), '..', 'cache', 'webmanager.log')
+    if not os.path.exists(log_path):
+        return jsonify({'logs': 'Brak logów Web Panelu.'})
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            return jsonify({'logs': ''.join(lines[-200:])})
+    except Exception as e:
+        return jsonify({'logs': f'Error reading log: {str(e)}'})
 
 @app.route('/bot/start')
 def start_bot():
@@ -196,8 +492,49 @@ def get_village_config():
 def get_map():
     sync_data = sync()
     center_id = request.args.get("center", None)
-    center = next(iter(sync_data['bot'])) if not center_id else center_id
-    map_data = json.dumps(MapBuilder.build(sync_data['villages'], current_village=center, size=15))
+    center = center_id
+    if not center:
+        # Try to find first managed village
+        if sync_data.get('bot'):
+            center = next(iter(sync_data['bot'].keys()), None)
+        # Fallback to first owned village in the map data
+        if not center and sync_data.get('villages'):
+            for vid, vdata in sync_data['villages'].items():
+                if vdata.get('is_owned'):
+                    center = vid
+                    break
+    
+    map_data_dict = MapBuilder.build(sync_data['villages'], current_village=center, size=15, attacks=sync_data['attacks'])
+    
+    # Add searchable list for the UI
+    searchable = {'players': [], 'allies': []}
+    p_seen = set()
+    a_seen = set()
+    for v in sync_data['villages'].values():
+        p = v.get('player')
+        if p and p not in p_seen:
+            searchable['players'].append(p)
+            p_seen.add(p)
+        a = v.get('ally')
+        if a and a not in a_seen:
+            searchable['allies'].append(a)
+            a_seen.add(a)
+    
+    map_data_dict['searchable'] = searchable
+    
+    # Pass current server for TWM links
+    server = "pl227"
+    if _DB_OK:
+        from core.models import DBSession
+        db_s = DatabaseManager._session()
+        if db_s:
+            row = db_s.query(DBSession).order_by(DBSession.updated_at.desc()).first()
+            if row and row.server:
+                server = row.server
+            db_s.close()
+    map_data_dict['server'] = server
+    
+    map_data = json.dumps(map_data_dict)
     return render_template('map.html', data=sync_data, map=map_data)
 
 
@@ -206,20 +543,45 @@ def get_village_overview():
     return render_template('villages.html', data=sync())
 
 
+@app.route('/api/templates', methods=['GET'])
+def api_get_templates():
+    return jsonify(TemplateManager.get_all_templates())
+
+
+@app.route('/api/templates/<category>/<name>', methods=['GET', 'POST', 'DELETE'])
+def api_template_crud(category, name):
+    # Security: only allow known categories
+    if category not in ('builder', 'troops', 'offensive'):
+        return jsonify({'error': 'Invalid category'}), 400
+
+    if request.method == 'GET':
+        content = TemplateManager.get_template_content(category, name)
+        if content is not None:
+            return jsonify(content)
+        return jsonify({'error': 'Template not found'}), 404
+
+    if request.method == 'POST':
+        data = request.get_json(force=True, silent=True)
+        if not data or 'content' not in data:
+            return jsonify({'error': 'Missing content'}), 400
+        if TemplateManager.save_template(category, name, data['content']):
+            return jsonify({'ok': True})
+        return jsonify({'error': 'Failed to save'}), 500
+
+    if request.method == 'DELETE':
+        if TemplateManager.delete_template(category, name):
+            return jsonify({'ok': True})
+        return jsonify({'error': 'Template not found'}), 404
+
+
 @app.route('/building_templates', methods=['GET', 'POST'])
 def get_building_templates():
-    if request.form.get('new', None):
-        plain = os.path.basename(request.form.get('new'))
-        if not plain.endswith('.txt'):
-            plain = "%s.txt" % plain
-        tempfile = '../templates/builder/%s' % plain
-        if not os.path.exists(tempfile):
-            with open(tempfile, 'w') as ouf:
-                ouf.write("")
     selected = request.args.get('t', None)
+    category = request.args.get('c', 'builder')
     return render_template('templates.html',
-                           templates=BuildingTemplateManager.template_cache_list(),
+                           templates=TemplateManager.get_all_templates(),
                            selected=selected,
+                           category=category,
                            buildings=buildings)
 
 
@@ -249,7 +611,193 @@ def config_set():
     return jsonify(sync())
 
 
-if len(sys.argv) > 1:
-    app.run(host="localhost", port=sys.argv[1])
-else:
-    app.run()
+@app.route('/api/clear_reports', methods=['POST'])
+def clear_reports_endpoint():
+    """
+    Clears all cached report JSON files and deletes related info.
+    Then kicks off historical report scan.
+    """
+    try:
+        cache_dir = os.path.join(os.path.dirname(__file__), '..', 'cache', 'reports')
+        if os.path.exists(cache_dir):
+            import glob
+            files = glob.glob(os.path.join(cache_dir, '*.json'))
+            for f in files:
+                try:
+                    os.remove(f)
+                except:
+                    pass
+        
+        # Trigger force_reports
+        data = request.get_json(silent=True) or {}
+        pages = str(data.get('pages', 5))
+        import subprocess
+        script_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'force_read_reports.py')
+        if os.path.exists(script_path):
+            subprocess.Popen([sys.executable, script_path, pages], cwd=os.path.join(os.path.dirname(__file__), '..'))
+        return jsonify({"ok": True, "message": f"Raporty wyczyszczone! Skan ({pages} stron) pobiera historię od nowa w tle."})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.route('/map/twm', methods=['GET'])
+def get_twm_map():
+    sync_data = sync()
+    server = "pl227" # Default fallback
+    
+    if _DB_OK:
+        from core.models import DBSession
+        db_s = DatabaseManager._session()
+        if db_s:
+            row = db_s.query(DBSession).order_by(DBSession.updated_at.desc()).first()
+            if row and row.server:
+                server = row.server
+            db_s.close()
+            
+    return render_template('twm.html', data=sync_data, server=server)
+
+
+@app.route('/api/twm_sync', methods=['POST'])
+def api_twm_sync():
+    """
+    Triggers the TWM sync script (scripts/twm_sync.py) to authenticate the bot's session with TribalWarsMap.
+    """
+    try:
+        import subprocess
+        script_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'twm_sync.py')
+        if not os.path.exists(script_path):
+            return jsonify({'ok': False, 'message': 'Skrypt scripts/twm_sync.py nie istnieje.'}), 404
+            
+        # Run the script and wait for it
+        result = subprocess.run([sys.executable, script_path], 
+                                cwd=os.path.join(os.path.dirname(__file__), '..'),
+                                capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            if "SUKCES" in result.stdout or "zalogowany" in result.stdout:
+                return jsonify({'ok': True, 'message': 'Synchronizacja z TribalWarsMap zakończona sukcesem!', 'output': result.stdout})
+            else:
+                return jsonify({'ok': False, 'message': 'Synchronizacja uruchomiona, ale nie potwierdzono sukcesu.', 'output': result.stdout})
+        else:
+            return jsonify({'ok': False, 'message': f'Błąd podczas synchronizacji (Exit code {result.returncode})', 'error': result.stderr})
+            
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+
+@app.route('/dashboard', methods=['GET'], strict_slashes=False)
+def get_dashboard():
+    return render_template('dashboard.html', data=sync())
+
+@app.route('/api/dashboard/stats', methods=['GET'])
+def api_dashboard_stats():
+    """
+    Aggregates global statistics for the dashboard from PostgreSQL.
+    Uses efficient raw SQL, handles double-counting via DISTINCT ON,
+    and incorporates v_farming_roi (atomic farming) data.
+    """
+    if not _DB_OK:
+        return jsonify({'error': 'database not available'}), 503
+
+    from sqlalchemy import text
+    s = DatabaseManager._session()
+    try:
+        # 1. Global Loot Aggregation (24h)
+        # Using DISTINCT ON (dest_id, created_at) to avoid double-counting duplicate reports
+        loot_query = text("""
+            SELECT 
+                COALESCE(SUM(loot_wood), 0) as wood,
+                COALESCE(SUM(loot_stone), 0) as stone,
+                COALESCE(SUM(loot_iron), 0) as iron,
+                COALESCE(SUM(loot_wood + loot_stone + loot_iron), 0) as total
+            FROM (
+                SELECT DISTINCT ON (dest_id, created_at) 
+                    loot_wood, loot_stone, loot_iron
+                FROM reports
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                ORDER BY dest_id, created_at, report_id
+            ) r
+        """)
+        loot_res = s.execute(loot_query).fetchone()
+
+        # 2. Attack Statistics
+        # Total attacks vs Losses (where attacker units were lost)
+        atk_query = text("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(CASE WHEN EXISTS (
+                    SELECT 1 FROM units_lost 
+                    WHERE attack_id = attacks.id AND side = 'attacker' AND amount > 0
+                ) THEN 1 END) as losses
+            FROM attacks
+            WHERE sent_at > NOW() - INTERVAL '24 hours'
+        """)
+        atk_res = s.execute(atk_query).fetchone()
+
+        # 3. Loot Timeline (24 Hours)
+        # Uses generate_series to ensure all 24 hours are present in Chart.js
+        timeline_query = text("""
+            SELECT 
+                to_char(h, 'HH24:00') as hour,
+                COALESCE(SUM(r.loot_total), 0) as value
+            FROM generate_series(
+                date_trunc('hour', NOW()) - INTERVAL '23 hours',
+                date_trunc('hour', NOW()),
+                INTERVAL '1 hour'
+            ) h
+            LEFT JOIN (
+                SELECT DISTINCT ON (dest_id, created_at) 
+                    date_trunc('hour', created_at) as hr,
+                    (loot_wood + loot_stone + loot_iron) as loot_total
+                FROM reports
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                ORDER BY dest_id, created_at, report_id
+            ) r ON r.hr = h
+            GROUP BY h
+            ORDER BY h
+        """)
+        timeline_res = s.execute(timeline_query).fetchall()
+
+        # 4. Top Farms ROI
+        # Fetches top 5 villages by gross loot using v_farming_roi to ensure compatibility during debug
+        top_farms_query = text("""
+            SELECT 
+                v.name,
+                v.x || '|' || v.y as coord,
+                COALESCE(SUM(roi.gross_loot), 0) as loot,
+                COUNT(roi.*) as count
+            FROM v_farming_roi roi
+            JOIN villages v ON v.id = roi.target_id
+            GROUP BY v.id, v.name, v.x, v.y
+            ORDER BY loot DESC
+            LIMIT 5
+        """)
+        top_farms_res = s.execute(top_farms_query).fetchall()
+
+        return jsonify({
+            "loot_24h": {
+                "wood": int(loot_res[0]),
+                "stone": int(loot_res[1]),
+                "iron": int(loot_res[2]),
+                "total": int(loot_res[3])
+            },
+            "attacks": {
+                "total": int(atk_res[0]),
+                "losses": int(atk_res[1])
+            },
+            "timeline": [{"hour": r[0], "value": int(r[1])} for r in timeline_res],
+            "top_farms": [{"name": r[0], "id": r[1], "loot": int(r[2]), "count": int(r[3])} for r in top_farms_res]
+        })
+    except Exception as e:
+        import logging
+        logging.getLogger("Dashboard").error(f"Dashboard Stats Error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        s.close()
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        port = int(sys.argv[1])
+    else:
+        port = int(os.environ.get("FLASK_RUN_PORT", 5000))
+    host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
+    app.run(host=host, port=port)

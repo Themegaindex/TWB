@@ -2,96 +2,600 @@
 
 {% block content %}
 <style>
-    #grid {
-      margin-left: auto;
-      margin-right: auto;
-      transform: rotate(-90deg);
-    }
+  :root {
+    --tw-brown: #3b2a1a;
+    --tw-gold: #c1a061;
+    --tw-light: #f5e8c1;
+    --tw-border: #4a3421;
+    --cell: 53px; /* Standard TW tile width */
+    --cell-h: 38px; /* Standard TW tile height */
+  }
 
-    #grid TR TD{
-      border:1px solid white;
-      background: #FFFFFF;
-      width: 30px;
-      height: 30px;
-      text-align: center;
-    }
+  body {
+    background-color: #222;
+  }
 
-    #grid TR TD:hover {
-        background: #333333;
-    }
+  #map-container {
+    background: url('https://dspl.innogamescdn.com/asset/89d9727b/graphic/map/gras1.png'); /* Fallback pattern */
+    background-color: #5c8a3c;
+    border: 3px solid var(--tw-border);
+    border-radius: 4px;
+    box-shadow: inset 0 0 50px rgba(0,0,0,0.5);
+    position: relative;
+    overflow: hidden;
+    height: 80vh;
+  }
 
-    #grid TR TD.owner {
-        background: #00FF00;
-    }
+  .paper-panel {
+    background: #e3d5b3 url('https://dspl.innogamescdn.com/asset/89d9727b/graphic/index/main_bg.jpg');
+    border: 2px solid #4a3421;
+    box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
+    padding: 15px;
+    color: #3b2a1a;
+    font-family: "Segoe UI", Tahoma, sans-serif;
+  }
 
-    #grid TR TD.enemy {
-        background: #FF0000;
-    }
+  .paper-header {
+    background: #5c3b1e;
+    color: #f5e8c1;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-weight: bold;
+    font-size: 14px;
+    margin-bottom: 10px;
+    text-shadow: 1px 1px #000;
+  }
 
-    #grid TR TD.tribe {
-        background: #0001FF;
-    }
+  #map-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    cursor: grab;
+  }
 
-    #grid TR TD.barbarian {
-        background: #AAAAAA;
-    }
+  #map-canvas:active {
+    cursor: grabbing;
+  }
+
+  #map-tooltip {
+    position: fixed;
+    background: #fff8e1;
+    border: 2px solid #5c3b1e;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #221a0f;
+    z-index: 1000;
+    display: none;
+    pointer-events: none;
+    box-shadow: 3px 3px 6px rgba(0,0,0,0.3);
+    border-radius: 2px;
+  }
+
+  .coord-box {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: monospace;
+  }
+
+  /* Legend colors */
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; border: 1px solid #000; }
+  .dot-own { background: #0000ff; }
+  .dot-tribe { background: #00ffff; }
+  .dot-enemy { background: #ff0000; }
+  .dot-barb { background: #808080; }
+  .dot-bonus { background: #ffff00; }
+
+  #village-info-table td { padding: 4px; font-size: 12px; }
+  #village-info-table th { color: #5c3b1e; font-size: 11px; text-transform: uppercase; }
+
+  .search-box {
+    margin-bottom: 20px;
+  }
+  .highlight-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 5px;
+    font-size: 12px;
+  }
+  .highlight-color {
+    width: 20px;
+    height: 20px;
+    border: 1px solid #000;
+    margin-right: 10px;
+    cursor: pointer;
+  }
+  .travel-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+  }
+  .unit-icon {
+    width: 16px;
+    height: 16px;
+    margin-right: 5px;
+  }
 </style>
+
 <div class="row">
-    <div class="col-lg-10">
-        <table id="grid"></table>
+  <div class="col-md-9">
+    <div id="map-container">
+      <canvas id="map-canvas"></canvas>
+      <div id="map-tooltip"></div>
+      <div class="coord-box" id="coords">x:0 y:0</div>
     </div>
-    <div class="col-lg-2">
-        <h4 id="v_name"></h4>
-        <p id="v_data"></p>
-    </div>
+  </div>
+  
+  <div class="col-md-3">
+    <div class="paper-panel" style="height: 80vh; overflow-y: auto;">
+      <div class="paper-header">SEARCH & HIGHLIGHT</div>
+      <div class="search-box">
+        <input type="text" id="map-search" class="form-control form-control-sm" placeholder="Search x|y, Player, Tribe...">
+        <div id="highlight-list" style="margin-top: 10px;">
+          <!-- highlights go here -->
+        </div>
+        <button class="btn btn-xs btn-outline-dark mt-2 w-100" onclick="addHighlight()">Add Highlight</button>
+      </div>
 
+      <div class="paper-header">VILLAGE DETAILS</div>
+      <div id="detail-content">
+        <p>Click a village to see details.</p>
+      </div>
+      
+      <div class="paper-header" style="margin-top: 20px;">LEGEND</div>
+      <div style="font-size: 12px; line-height: 1.8;">
+        <span class="dot dot-own"></span> Your Village<br>
+        <span class="dot dot-tribe"></span> Tribe Member<br>
+        <span class="dot dot-enemy"></span> Enemy<br>
+        <span class="dot dot-barb"></span> Barbarian<br>
+        <span class="dot dot-bonus"></span> Bonus Village
+      </div>
+    </div>
+  </div>
 </div>
+
 <script>
-	var map_data = {{map | safe}}
-    function generateGrid(x, y, data) {
-      grid.innerHTML="";
-      for (var i=0; i<x; i++) {
-        row = grid.insertRow(i);
-        for (var j=0; j<y; j++) {
-          cell = row.insertCell(j);
+  const MAP_DATA = {{ map | safe }};
+  const GRID = MAP_DATA.grid;
+  const EXTRA = MAP_DATA.extra || {};
+  const BOUNDS = MAP_DATA.bounds || { min_x: 0, min_y: 0 };
+  
+  const TILE_W = 53;
+  const TILE_H = 38;
+  
+  const canvas = document.getElementById('map-canvas');
+  const ctx = canvas.getContext('2d');
+  const container = document.getElementById('map-container');
+  const tooltip = document.getElementById('map-tooltip');
+  const coordDisplay = document.getElementById('coords');
+  
+  let scale = 1.0;
+  let offsetX = 0;
+  let offsetY = 0;
+  let isDragging = false;
+  let lastX, lastY;
+  
+  // Village size categories (same as TW)
+  function getVillageSize(points) {
+    if (points < 300) return 1;
+    if (points < 1000) return 2;
+    if (points < 3000) return 3;
+    if (points < 9000) return 4;
+    return 5;
+  }
 
-          if(i in data.grid && j in data.grid[i] && data.grid[i][j]) {
-            var village = data.grid[i][j];
-            cell.onclick = function() { clickCell(this); };
-            cell.onmouseover = function() { clickCell(this); };
-            if(village.owner != "0") {
-                cell.setAttribute("village", JSON.stringify(village));
-                if(data.extra && village.owner == data.extra.owner) {
-                    cell.setAttribute("class", "owner");
-                } else if(data.extra && data.extra.tribe != "0" && data.extra.tribe == village.tribe) {
-                    cell.setAttribute("class", "tribe");
-                } else {
-                    cell.setAttribute("class", "enemy");
-                }
-            } else {
-                cell.setAttribute("class", "barbarian");
-            }
-          }
+  function drawVillage(ctx, px, py, vil, tw, th) {
+    const isBarb = (!vil.owner || vil.owner === '0');
+    const isOwner = (EXTRA.owner && vil.owner === EXTRA.owner);
+    const isTribe = (EXTRA.tribe && vil.owner !== '0' && vil.tribe === EXTRA.tribe);
+    const points = vil.points || 0;
+    const size = getVillageSize(points);
+    
+    // Draw terrain (grass)
+    ctx.fillStyle = '#5c8a3c';
+    ctx.fillRect(px, py, tw, th);
+    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+    ctx.strokeRect(px, py, tw, th);
+    
+    // Draw Village Sprite
+    // We mock the TW style with paths because we don't have local assets
+    const vx = px + tw/2;
+    const vy = py + th/2;
+    
+    ctx.save();
+    ctx.translate(vx, vy);
+    
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(0, th*0.3, tw*0.3, th*0.15, 0, 0, Math.PI*2);
+    ctx.fill();
+    
+    // Color circle (indicator)
+    let color = '#808080'; // Barb
+    if (isOwner) color = '#0000ff';
+    else if (isTribe) color = '#00ffff';
+    else if (!isBarb) color = '#ff0000';
+    
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, th*0.35, 4, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
 
+    // House Body
+    const houseW = 10 + size*2;
+    const houseH = 6 + size*2;
+    
+    const grad = ctx.createLinearGradient(0, -houseH, 0, houseH);
+    grad.addColorStop(0, '#a67c52');
+    grad.addColorStop(1, '#5c3b1e');
+    ctx.fillStyle = grad;
+    
+    ctx.fillRect(-houseW/2, -houseH/2, houseW, houseH);
+    ctx.strokeStyle = '#221a0f';
+    ctx.strokeRect(-houseW/2, -houseH/2, houseW, houseH);
+    
+    // Roof
+    ctx.fillStyle = '#b71c1c'; // Red roof
+    ctx.beginPath();
+    ctx.moveTo(-houseW/2 - 2, -houseH/2);
+    ctx.lineTo(0, -houseH/2 - houseH*0.8);
+    ctx.lineTo(houseW/2 + 2, -houseH/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    
+    ctx.restore();
+    
+    // Label
+    if (scale > 0.7) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '9px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText((vil.name || 'Village').substring(0, 10), px + tw/2, py + th - 2);
+    }
+  }
+
+  function render() {
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    
+    const tw = Math.floor(TILE_W * scale);
+    const th = Math.floor(TILE_H * scale);
+    
+    const xs = Object.keys(GRID).sort((a,b) => a-b);
+    if (!xs.length) return;
+    const ys = Object.keys(GRID[xs[0]]).sort((a,b) => a-b);
+    
+    for (let xi=0; xi<xs.length; xi++) {
+      for (let yi=0; yi<ys.length; yi++) {
+        const px = Math.floor(xi * tw + offsetX);
+        const py = Math.floor(yi * th + offsetY);
+        
+        // Culling
+        if (px + tw < 0 || px > canvas.width || py + th < 0 || py > canvas.height) continue;
+        
+        const vil = GRID[xs[xi]][ys[yi]];
+        if (vil) {
+          drawVillage(ctx, px, py, vil, tw, th);
+        } else {
+          // Empty land
+          ctx.fillStyle = '#5c8a3c';
+          ctx.fillRect(px, py, tw, th);
+          ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+          ctx.strokeRect(px, py, tw, th);
+        }
+      }
+    }
+  }
+
+  // --- Interaction ---
+  container.addEventListener('mousedown', e => {
+    isDragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+
+  window.addEventListener('mousemove', e => {
+    const rect = container.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    
+    // Hover Update
+    const tw = Math.floor(TILE_W * scale);
+    const th = Math.floor(TILE_H * scale);
+    const xi = Math.floor((mx - offsetX) / tw);
+    const yi = Math.floor((my - offsetY) / th);
+    
+    const xs = Object.keys(GRID).sort((a,b) => a-b);
+    if (xi >= 0 && xi < xs.length) {
+      const worldX = xs[xi];
+      const ys = Object.keys(GRID[worldX]).sort((a,b) => a-b);
+      if (yi >= 0 && yi < ys.length) {
+        const worldY = ys[yi];
+        coordDisplay.innerText = `x:${worldX} y:${worldY}`;
+        
+        const vil = GRID[worldX][worldY];
+        if (vil) {
+          tooltip.style.display = 'block';
+          tooltip.style.left = (e.clientX + 15) + 'px';
+          tooltip.style.top = (e.clientY + 15) + 'px';
+          tooltip.innerHTML = `<b>${vil.name}</b> (${worldX}|${worldY})<br>
+                               Points: ${vil.points}<br>
+                               Owner: ${vil.owner_id || 'Barbarian'}`;
+        } else {
+          tooltip.style.display = 'none';
         }
       }
     }
 
-    generateGrid(Object.keys(map_data.grid).length, Object.keys(map_data.grid).length, map_data);
+    if (!isDragging) return;
+    offsetX += (e.clientX - lastX);
+    offsetY += (e.clientY - lastY);
+    lastX = e.clientX;
+    lastY = e.clientY;
+    render();
+  });
 
-    function clickCell(cell) {
-        var village_data = $(cell).attr("village");
-        if(!village_data) return;
-        var data = JSON.parse(village_data);
-        $('#v_name').text(data.name);
+  window.addEventListener('mouseup', () => isDragging = false);
 
-        var output = '';
-        $.each(data, function(k, v){
-            if(jQuery.type(v) !== "object") {
-                output += '<strong>' + k + '</strong> ' + v + '<br />';
-            }
-        });
-        $('#v_data').html(output);
+  container.addEventListener('wheel', e => {
+    e.preventDefault();
+    const oldScale = scale;
+    scale *= (e.deltaY > 0 ? 0.9 : 1.1);
+    scale = Math.max(0.2, Math.min(2, scale));
+    
+    // Zoom towards center or mouse would be better, but keep it simple
+    render();
+  }, {passive: false});
+
+  // --- Click details ---
+  container.addEventListener('click', e => {
+    const rect = container.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const tw = Math.floor(TILE_W * scale);
+    const th = Math.floor(TILE_H * scale);
+    const xi = Math.floor((mx - offsetX) / tw);
+    const yi = Math.floor((my - offsetY) / th);
+    
+    const xs = Object.keys(GRID).sort((a,b) => a-b);
+    if (xi >= 0 && xi < xs.length) {
+      const relX = xs[xi];
+      const ys = Object.keys(GRID[relX]).sort((a,b) => a-b);
+      if (yi >= 0 && yi < ys.length) {
+        const relY = ys[yi];
+        const vil = GRID[relX][relY];
+        if (vil) {
+          const worldX = BOUNDS.min_x + parseInt(relX);
+          const worldY = BOUNDS.min_y + parseInt(relY);
+          showVillage(vil, worldX, worldY);
+        }
+      }
     }
+  });
+
+  function showVillage(vil, x, y) {
+    const content = document.getElementById('detail-content');
+    
+    // Calculate travel times
+    const myVillages = EXTRA.my_villages || [];
+    let travelHtml = "";
+    
+    const units = [
+      {id: 'spy', speed: 9},
+      {id: 'light', speed: 10},
+      {id: 'heavy', speed: 11},
+      {id: 'axe', speed: 18},
+      {id: 'sword', speed: 22},
+      {id: 'ram', speed: 30},
+      {id: 'snob', speed: 35}
+    ];
+
+    content.innerHTML = `
+      <table id="village-info-table">
+        <tr><th>Village:</th><td><b>${vil.name}</b></td></tr>
+        <tr><th>Coords:</th><td><a href="#" onclick="centerMap(${x}, ${y})">${x}|${y}</a></td></tr>
+        <tr><th>Points:</th><td>${vil.points}</td></tr>
+        <tr><th>Owner:</th><td>${vil.player || vil.owner_id || 'Barbarzyńca'}</td></tr>
+        <tr><th>Tribe:</th><td>${vil.ally || vil.tribe || 'Brak'}</td></tr>
+      </table>
+      
+      <div id="report-details" style="margin-top: 15px;">
+        <div class="text-center py-3"><div class="spinner-border spinner-border-sm"></div> Fetching reports...</div>
+      </div>
+
+      <div class="paper-header" style="margin-top: 15px; font-size: 10px;">TRAVEL TIMES (from current)</div>
+      <div id="travel-times">
+        ${units.map(u => `
+          <div class="travel-item">
+            <span><img src="https://dspl.innogamescdn.com/asset/89d9727b/graphic/unit/unit_${u.id}.png" class="unit-icon"> ${u.id}</span>
+            <span id="time-${u.id}">-</span>
+          </div>
+        `).join('')}
+      </div>
+
+      <div style="margin-top: 15px; display: flex; gap: 5px;">
+        <button class="btn btn-sm btn-dark flex-grow-1" onclick="alert('TODO: Add to Farm List')">➕ Add to Farm</button>
+        <a href="https://${MAP_DATA.server || 'pl227'}.tribalwarsmap.com/pl/village/${vil.id}" target="_blank" class="btn btn-sm btn-outline-info">🌐 TWM</a>
+      </div>
+    `;
+
+    // If we have a current center village, calculate times
+    if (MAP_DATA.center) {
+      const [cx, cy] = MAP_DATA.center;
+      const dist = Math.sqrt(Math.pow(x-cx, 2) + Math.pow(y-cy, 2));
+      units.forEach(u => {
+        const mins = Math.round(dist * u.speed);
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        const elem = document.getElementById(`time-${u.id}`);
+        if (elem) elem.innerText = `${h}h ${m}m`;
+      });
+    }
+
+    // Fetch details including latest report from API
+    fetch(`/api/village_attacks?vid=${vil.id}`)
+      .then(r => r.json())
+      .then(resp => {
+        const reportDiv = document.getElementById('report-details');
+        if (!resp.latest_report) {
+          reportDiv.innerHTML = `<div class="alert alert-info py-1" style="font-size: 11px; background: rgba(255,255,255,0.5);">No reports for this village.</div>`;
+          return;
+        }
+        
+        const rep = resp.latest_report;
+        const date = new Date(rep.created_at).toLocaleString();
+        
+        let scoutsHtml = "";
+        if (rep.scout_resources) {
+          scoutsHtml = `
+            <div class="paper-header" style="margin-top: 10px; font-size: 10px; background: #3c521e;">SCOUTED RESOURCES</div>
+            <div style="font-size: 11px; display: flex; justify-content: space-around;">
+               <span><img src="https://dspl.innogamescdn.com/asset/89d9727b/graphic/wood.png" class="unit-icon" style="width:12px;height:12px;"> ${rep.scout_resources.wood}</span>
+               <span><img src="https://dspl.innogamescdn.com/asset/89d9727b/graphic/stone.png" class="unit-icon" style="width:12px;height:12px;"> ${rep.scout_resources.stone}</span>
+               <span><img src="https://dspl.innogamescdn.com/asset/89d9727b/graphic/iron.png" class="unit-icon" style="width:12px;height:12px;"> ${rep.scout_resources.iron}</span>
+            </div>
+          `;
+        }
+
+        let buildingsHtml = "";
+        if (rep.scout_buildings && Object.keys(rep.scout_buildings).length > 0) {
+          buildingsHtml = `
+            <div class="paper-header" style="margin-top: 10px; font-size: 10px; background: #3c521e;">SCOUTED BUILDINGS</div>
+            <div style="font-size: 10px; columns: 2;">
+              ${Object.entries(rep.scout_buildings).map(([b, l]) => `<div>${b}: <b>${l}</b></div>`).join('')}
+            </div>
+          `;
+        }
+
+        reportDiv.innerHTML = `
+          <div class="paper-header" style="background: #3b2a1a; font-size: 10px;">LATEST REPORT (${rep.type.toUpperCase()})</div>
+          <div style="font-size: 11px; color: #555; margin-bottom: 5px;">${date}</div>
+          <div style="font-size: 11px;">
+            <b>Looted:</b> ${rep.loot.wood + rep.loot.stone + rep.loot.iron} resources
+            ${scoutsHtml}
+            ${buildingsHtml}
+          </div>
+        `;
+      })
+      .catch(err => {
+        console.error(err);
+        document.getElementById('report-details').innerHTML = `<div class="text-danger small">Error loading details.</div>`;
+      });
+  }
+
+  // --- Search & Highlight ---
+  let highlights = [];
+
+  function addHighlight() {
+    const name = prompt("Enter Player or Tribe name:");
+    if (!name) return;
+    const color = '#' + Math.floor(Math.random()*16777215).toString(16);
+    highlights.push({name: name.toLowerCase(), color: color});
+    updateHighlightUI();
+    render();
+  }
+
+  function updateHighlightUI() {
+    const list = document.getElementById('highlight-list');
+    list.innerHTML = highlights.map((h, i) => `
+      <div class="highlight-item">
+        <div class="highlight-color" style="background: ${h.color}" onclick="removeHighlight(${i})"></div>
+        <span>${h.name}</span>
+      </div>
+    `).join('');
+  }
+
+  function removeHighlight(index) {
+    highlights.splice(index, 1);
+    updateHighlightUI();
+    render();
+  }
+
+  function centerMap(x, y) {
+    // In our simplified grid, we shift offsets
+    // This is tricky because the grid is pre-built around a center
+    // We should ideally reload the page with ?center=xxx
+    window.location.href = `/map?center=${x}|${y}`;
+  }
+
+  document.getElementById('map-search').addEventListener('keypress', e => {
+    if (e.key === 'Enter') {
+      const val = e.target.value.trim().toLowerCase();
+      if (/^\d{1,3}\|\d{1,3}$/.test(val)) {
+        const [x, y] = val.split('|');
+        centerMap(x, y);
+      } else {
+        // Search in searchable list
+        const searchable = MAP_DATA.searchable || {players: [], allies: []};
+        const foundP = searchable.players.find(p => p.toLowerCase() === val);
+        const foundA = searchable.allies.find(a => a.toLowerCase() === val);
+        
+        if (foundP || foundA) {
+          // If found, add highlight automatically
+          if (!highlights.some(h => h.name === val)) {
+            const color = '#' + Math.floor(Math.random()*16777215).toString(16);
+            highlights.push({name: val, color: color});
+            updateHighlightUI();
+          }
+          alert(`Searching for "${val}" - added highlight. Map center is based on active village, use zoom/drag.`);
+          render();
+        } else {
+          alert(`Not found: ${val}`);
+        }
+      }
+    }
+  });
+
+  // Modify drawVillage to use highlights
+  const originalDrawVillage = drawVillage;
+  drawVillage = function(ctx, px, py, vil, tw, th) {
+     // Check highlights
+     let highlightColor = null;
+     if (vil.player || vil.ally) {
+       highlights.forEach(h => {
+         if ((vil.player && vil.player.toLowerCase().includes(h.name)) || 
+             (vil.ally && vil.ally.toLowerCase().includes(h.name))) {
+           highlightColor = h.color;
+         }
+       });
+     }
+
+     if (highlightColor) {
+        ctx.fillStyle = highlightColor;
+        ctx.fillRect(px, py, tw, th);
+        ctx.strokeStyle = '#fff';
+        ctx.strokeRect(px, py, tw, th);
+        // Then draw house on top
+        originalDrawVillage(ctx, px, py, vil, tw, th);
+     } else {
+        originalDrawVillage(ctx, px, py, vil, tw, th);
+     }
+  }
+
+  // Init
+  window.addEventListener('resize', render);
+  
+  // Center map
+  const xs = Object.keys(GRID);
+  if (xs.length) {
+    offsetX = container.clientWidth / 2 - (xs.length * TILE_W) / 2;
+    offsetY = container.clientHeight / 2 - (Object.keys(GRID[xs[0]]).length * TILE_H) / 2;
+  }
+  
+  render();
+
 </script>
 {% endblock %}

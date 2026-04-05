@@ -42,6 +42,8 @@ help_file = {
     'farms.max_farms': 'The amount of nearby villages to check',
     'farms.attack_higher_points': 'If enabled villages with higher points than the current one will automatically be ignored',
     'farms.force_scout_if_available': 'Will only attack villages that have either been attacked before or it will automatically scout them',
+    'farms.map_scan_radius': 'Radius (in 20x20 sectors) to scan around the village on the map. 0 to disable.',
+    'farms.map_scan_delay': 'Time in hours between full map rescans.',
     'farms.farm_scout_amount': 'Sets the amount of spies used to determine if a village is safe to farm',
     'market': 'Automatic management of market trading',
     'market.auto_trade': 'Enable automated trading',

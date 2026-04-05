@@ -1,18 +1,20 @@
-import json
 import logging
 import os
 import sys
 
+from core.filemanager import FileManager
 from game.attack import AttackCache
 from game.warehouse_balancer import ResourceCoordinator
+from core.world_crawler import WorldCrawler
+from core.database import DatabaseManager, DBPlayer
+from datetime import datetime, timedelta
 
 
 class VillageManager:
     @staticmethod
     def farm_manager(verbose=False, clean_reports=False):
         logger = logging.getLogger("FarmManager")
-        with open("config.json", "r") as f:
-            config = json.load(f)
+        config = FileManager.load_json_file("config.json") or {}
 
         if verbose:
             logger.info("Villages: %d", len(config["villages"]))
@@ -85,6 +87,25 @@ class VillageManager:
             coordinator.run()
         except Exception as exc:  # pragma: no cover - defensive guard
             logging.getLogger("ResourceCoordinator").exception("Resource balancer failed: %s", exc)
+
+    @staticmethod
+    def world_manager():
+        """Checks if world data (villages/players/allies) needs updating."""
+        logger = logging.getLogger("WorldManager")
+        
+        # Check if we have any data and when it was last updated
+        s = DatabaseManager._session()
+        try:
+            last_p = s.query(DBPlayer).order_by(DBPlayer.last_seen.desc()).first()
+            if not last_p or (datetime.utcnow() - last_p.last_seen) > timedelta(hours=24):
+                logger.info("World data is missing or older than 24h. Starting crawl...")
+                WorldCrawler.full_crawl()
+            else:
+                logger.info("World data is up to date (last update: %s)", last_p.last_seen)
+        except Exception as e:
+            logger.error(f"World manager check failed: {e}")
+        finally:
+            s.close()
 
 
 if __name__ == "__main__":

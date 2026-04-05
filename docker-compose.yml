@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16
+    container_name: twb_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: twb_user
+      POSTGRES_PASSWORD: twb_password
+      POSTGRES_DB: twb_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: twb_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@twb.com
+      PGADMIN_DEFAULT_PASSWORD: admin_password
+      PGADMIN_CONFIG_CHECK_EMAIL_DELIVERABILITY: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+
+  adminer:
+    image: adminer
+    container_name: twb_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: twb_portainer
+    restart: always
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+
+volumes:
+  postgres_data:
+  portainer_data:

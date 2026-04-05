@@ -1,0 +1,167 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row">
+        <div class="col-md-12">
+            <h2 class="mb-4">Global Analytics Dashboard</h2>
+        </div>
+    </div>
+
+    <!-- Summary Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card text-white bg-primary shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="card-title text-uppercase opacity-75">Loot Today (24h)</h6>
+                    <h3 id="stat-loot-total">Loading...</h3>
+                    <div id="stat-loot-breakdown" class="small"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-success shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="card-title text-uppercase opacity-75">Attacks Sent (24h)</h6>
+                    <h3 id="stat-attacks-total">Loading...</h3>
+                    <div id="stat-attack-failure" class="small">Wait...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-info shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="card-title text-uppercase opacity-75">Active Villages</h6>
+                    <h3>{{ data.bot | length }}</h3>
+                    <div class="small">Managed by TWB</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-dark shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="card-title text-uppercase opacity-75">World Data</h6>
+                    <h3>{{ data.villages | length }}</h3>
+                    <div class="small">Known villages in DB</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Loot Timeline Chart -->
+        <div class="col-lg-8 mb-4">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white font-weight-bold">
+                    Loot Intensity (Last 24 Hours)
+                </div>
+                <div class="card-body">
+                    <canvas id="lootChart" height="150"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Destinations -->
+        <div class="col-lg-4 mb-4">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white font-weight-bold">
+                    🔥 Most Profitable (Top 5)
+                </div>
+                <div class="card-body p-0">
+                    <table class="table table-hover mb-0" id="top-farms-table">
+                        <thead class="thead-light">
+                            <tr>
+                                <th>Village</th>
+                                <th>Loot</th>
+                                <th>Runs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Filled by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .card { border-radius: 12px; transition: transform 0.2s; }
+    .card:hover { transform: translateY(-3px); }
+    .opacity-75 { opacity: 0.75; }
+    .shadow-sm { box-shadow: 0 .125rem .25rem rgba(0,0,0,.075)!important; }
+</style>
+
+{% endblock %}
+
+{% block scripts %}
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+$(document).ready(function() {
+    loadStats();
+    setInterval(loadStats, 60000); // refresh every minute
+});
+
+function loadStats() {
+    $.getJSON('/api/dashboard/stats', function(data) {
+        // 1. Update Cards
+        $('#stat-loot-total').text(data.loot_24h.total.toLocaleString());
+        $('#stat-loot-breakdown').html(
+            `Wood: ${data.loot_24h.wood.toLocaleString()} | 
+             Stone: ${data.loot_24h.stone.toLocaleString()} | 
+             Iron: ${data.loot_24h.iron.toLocaleString()}`
+        );
+        
+        $('#stat-attacks-total').text(data.attacks.total);
+        let lostPercent = data.attacks.total > 0 ? (data.attacks.losses / data.attacks.total * 100).toFixed(1) : 0;
+        $('#stat-attack-failure').text(`Losses in ${data.attacks.losses} attacks (${lostPercent}%)`);
+
+        // 2. Build Timeline Chart
+        const labels = data.timeline.map(t => t.hour);
+        const values = data.timeline.map(t => t.value);
+
+        if (window.myLootChart) window.myLootChart.destroy();
+        const ctx = document.getElementById('lootChart').getContext('2d');
+        window.myLootChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Total Loot (W+S+I)',
+                    data: values,
+                    borderColor: '#007bff',
+                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { beginAtZero: true, grid: { display: true, color: '#f0f0f0' } },
+                    x: { grid: { display: false } }
+                }
+            }
+        });
+
+        // 3. Update Table
+        let tableHtml = "";
+        data.top_farms.forEach(f => {
+            tableHtml += `
+                <tr>
+                    <td><small><b>${f.name}</b></small><br><span class="badge badge-light">(${f.id})</span></td>
+                    <td><span class="text-success font-weight-bold">${f.loot.toLocaleString()}</span></td>
+                    <td>${f.count}</td>
+                </tr>
+            `;
+        });
+        $('#top-farms-table tbody').html(tableHtml || "<tr><td colspan='3' class='text-center'>No data yet</td></tr>");
+    });
+}
+</script>
+{% endblock %}

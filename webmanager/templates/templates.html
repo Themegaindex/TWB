@@ -1,71 +1,502 @@
 {% extends "main.html" %}
 
 {% block content %}
-<div class="row">
-	{% if not selected %}
-	<div class="col-lg-12">
-		<table class="table table-striped">
-		<thead>
-			<tr>
-				<th>Template</th>
-				<th>Actions</th>
-			</tr>
-		</thead>
-		<tbody>
-			{% for template in templates %}
-				<tr>
-					<td><a href="?t={{template}}">{{template}}</a></td>
-					<td>{{templates[template] | count}}</td>
-				</tr>
-			{% endfor %}
-			<tr class="table-primary">
-				<form method="post">
-					<td><input type="text" class="form-control" name="new" placeholder="New template (should end with .txt)"></td>
-					<td><input type="submit" class="btn btn-info btn-inline" name="add" value="Add new"></td>
-				</form>
-			</tr>
-		</tbody>
-	</table>
-	</div>
-	{% else %}
-	<table class="table table-striped">
-		<thead>
-			<tr>
-				<th>Order</th>
-				<th>Building</th>
-				<th>Levels</th>
-				<th>Actions</th>
-			</tr>
-		</thead>
-		<tbody>
-			<tr>
-				<td></td>
-				<td>
-					<select id="new_row" class="form-control">
-						{% for building in buildings %}
-						<option value="{{building}}">{{building}}</option>
-						{% endfor %}
-					</select>
-				</td>
-				<td class="form-inline">
-					<input type="number" class="form-control" value="0" id="new_val_start"/>
-					-&gt;
-					<input type="number" class="form-control" value="1" id="new_val_end"/>
-				</td>
-				<td><input type="button" class="btn btn-success btn-inline" value="Add row"></td>
-			</tr>
-		{% for t in templates[selected] %}
-			<tr>
-				<td>{{ loop.index }}</td>
-				<td>{{ t.building }}</td>
-				<td>{{ t.from }} -&gt; {{ t.to }}</td>
-				<td></td>
-			</tr>
-		{% endfor %}
-		</tbody>
-	</table>
-	{% endif %}
+<style>
+    :root {
+        --glass-bg: rgba(255, 255, 255, 0.05);
+        --glass-border: rgba(255, 255, 255, 0.1);
+        --glass-blur: blur(12px);
+        --accent-color: #6366f1;
+        --accent-hover: #4f46e5;
+    }
 
+    .glass-card {
+        background: var(--glass-bg);
+        backdrop-filter: var(--glass-blur);
+        border: 1px solid var(--glass-border);
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        margin-bottom: 24px;
+    }
+
+    .nav-tabs {
+        border-bottom: none;
+        gap: 8px;
+        margin-bottom: 20px;
+    }
+
+    .nav-tabs .nav-link {
+        color: #94a3b8;
+        border: 1px solid var(--glass-border);
+        background: var(--glass-bg);
+        border-radius: 12px;
+        padding: 10px 20px;
+        transition: all 0.3s ease;
+    }
+
+    .nav-tabs .nav-link.active {
+        background: var(--accent-color);
+        color: white;
+        border-color: var(--accent-color);
+    }
+
+    .nav-tabs .nav-link:hover:not(.active) {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .template-list-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        transition: all 0.2s ease;
+        border: 1px solid transparent;
+        cursor: pointer;
+    }
+
+    .template-list-item:hover {
+        background: rgba(255, 255, 255, 0.07);
+        border-color: var(--glass-border);
+        transform: translateX(4px);
+    }
+
+    .template-list-item.selected {
+        border-color: var(--accent-color);
+        background: rgba(99, 102, 241, 0.1);
+    }
+
+    .btn-premium {
+        background: var(--accent-color);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 8px 16px;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }
+
+    .btn-premium:hover {
+        background: var(--accent-hover);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+
+    .editor-container {
+        min-height: 500px;
+    }
+
+    .step-row {
+        background: rgba(0, 0, 0, 0.2);
+        padding: 15px;
+        border-radius: 12px;
+        margin-bottom: 10px;
+        border: 1px solid var(--glass-border);
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+
+    .badge-step {
+        width: 30px;
+        height: 30px;
+        background: var(--accent-color);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+    }
+
+    .form-control-premium {
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--glass-border);
+        color: white;
+        border-radius: 8px;
+    }
+
+    .form-control-premium:focus {
+        background: rgba(0, 0, 0, 0.4);
+        border-color: var(--accent-color);
+        color: white;
+        box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    }
+
+    .unit-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 12px;
+    }
+
+    .unit-input-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .json-preview {
+        background: #1e1e1e;
+        color: #dcdcdc;
+        padding: 15px;
+        border-radius: 8px;
+        font-family: monospace;
+        font-size: 12px;
+        overflow-x: auto;
+    }
+</style>
+
+<div class="container-fluid py-4">
+    <div class="row">
+        <!-- Sidebar: Template List -->
+        <div class="col-lg-3">
+            <div class="glass-card">
+                <h4 class="mb-4">🗂️ Templates</h4>
+                
+                <ul class="nav nav-tabs" id="templateTabs" role="tablist">
+                    <li class="nav-item">
+                        <a class="nav-link active" id="builder-tab" data-toggle="tab" href="#builder" role="tab" onclick="switchCategory('builder')">🏰</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" id="troops-tab" data-toggle="tab" href="#troops" role="tab" onclick="switchCategory('troops')">⚔️</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" id="offensive-tab" data-toggle="tab" href="#offensive" role="tab" onclick="switchCategory('offensive')">🏹</a>
+                    </li>
+                </ul>
+
+                <div class="tab-content mt-3">
+                    <div id="list-container">
+                        <!-- Populated by JS -->
+                        <div class="text-center py-4">
+                            <div class="spinner-border text-light" role="status"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="border-secondary mt-4">
+                <div class="mt-3">
+                    <input type="text" id="newTemplateName" class="form-control form-control-premium mb-2" placeholder="template_name.txt">
+                    <button class="btn btn-premium w-100" onclick="createNewTemplate()">✨ Create New</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content: Editor -->
+        <div class="col-lg-9">
+            <div class="glass-card editor-container" id="editor-card" style="display: none;">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h3 id="currentTemplateTitle">Select a template</h3>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-danger btn-sm" onclick="deleteCurrentTemplate()">🗑️ Delete</button>
+                        <button class="btn btn-premium" onclick="saveCurrentTemplate()">💾 Save Changes</button>
+                    </div>
+                </div>
+
+                <div id="editor-body">
+                    <!-- Dynamic Editor Content -->
+                </div>
+                
+                <hr class="border-secondary my-4">
+                <h5>Raw Content Preview</h5>
+                <pre class="json-preview" id="raw-preview"></pre>
+            </div>
+
+            <div class="glass-card text-center py-5 editor-container" id="no-selection-card">
+                <div class="py-5">
+                    <h1 class="display-1 opacity-25">Select a template</h1>
+                    <p class="text-muted">Choose a template from the sidebar to start editing or create a new one.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
+<!-- Template Row Templates (Hidden) -->
+<template id="builder-row-template">
+    <div class="step-row">
+        <div class="badge-step">?</div>
+        <select class="form-control form-control-premium building-select">
+            {% for b in buildings %}
+            <option value="{{b}}">{{b}}</option>
+            {% endfor %}
+        </select>
+        <div class="d-flex align-items-center gap-2">
+            <span>Level:</span>
+            <input type="number" class="form-control form-control-premium building-level" style="width: 80px;">
+        </div>
+        <button class="btn btn-sm btn-outline-danger ms-auto" onclick="removeStep(this)">✕</button>
+    </div>
+</template>
+
+<script>
+    let currentCategory = 'builder';
+    let currentName = '';
+    let templatesData = {};
+    let buildingsList = {{ buildings | tojson }};
+
+    function init() {
+        loadTemplatesList();
+    }
+
+    async function loadTemplatesList() {
+        const response = await fetch('/api/templates');
+        templatesData = await response.json();
+        renderList();
+    }
+
+    function renderList() {
+        const listContainer = document.getElementById('list-container');
+        listContainer.innerHTML = '';
+        const list = templatesData[currentCategory] || [];
+        
+        if (list.length === 0) {
+            listContainer.innerHTML = '<div class="text-center py-3 text-muted">No templates available.</div>';
+            return;
+        }
+
+        list.forEach(name => {
+            const item = document.createElement('div');
+            item.className = `template-list-item ${name === currentName ? 'selected' : ''}`;
+            item.onclick = () => loadTemplate(currentCategory, name);
+            item.innerHTML = `
+                <span>${name}</span>
+                <i class="opacity-50">›</i>
+            `;
+            listContainer.appendChild(item);
+        });
+    }
+
+    function switchCategory(cat) {
+        currentCategory = cat;
+        renderList();
+        // Reset editor
+        document.getElementById('editor-card').style.display = 'none';
+        document.getElementById('no-selection-card').style.display = 'block';
+    }
+
+    async function loadTemplate(cat, name) {
+        currentName = name;
+        renderList();
+
+        const response = await fetch(`/api/templates/${cat}/${name}`);
+        const data = await response.json();
+
+        document.getElementById('currentTemplateTitle').innerText = name;
+        document.getElementById('raw-preview').innerText = data.raw;
+        document.getElementById('editor-card').style.display = 'block';
+        document.getElementById('no-selection-card').style.display = 'none';
+
+        renderEditor(data.parsed);
+    }
+
+    function renderEditor(parsed) {
+        const editorBody = document.getElementById('editor-body');
+        editorBody.innerHTML = '';
+
+        if (currentCategory === 'builder') {
+            renderBuilderEditor(parsed);
+        } else if (currentCategory === 'troops') {
+            renderTroopsEditor(parsed);
+        } else if (currentCategory === 'offensive') {
+            renderOffensiveEditor(parsed);
+        }
+    }
+
+    function renderBuilderEditor(parsed) {
+        const container = document.getElementById('editor-body');
+        const rowsContainer = document.createElement('div');
+        rowsContainer.id = 'builder-rows';
+        container.appendChild(rowsContainer);
+
+        (parsed || []).forEach((step, idx) => {
+            addBuilderRow(step.building, step.to);
+        });
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn btn-outline-success w-100 mt-3';
+        addBtn.innerText = '+ Add Building Step';
+        addBtn.onclick = () => addBuilderRow('main', 1);
+        container.appendChild(addBtn);
+    }
+
+    function addBuilderRow(building, level) {
+        const template = document.getElementById('builder-row-template').content.cloneNode(true);
+        const row = template.querySelector('.step-row');
+        row.querySelector('.building-select').value = building || 'main';
+        row.querySelector('.building-level').value = level || 1;
+        
+        document.getElementById('builder-rows').appendChild(row);
+        updateStepNumbers();
+    }
+
+    function updateStepNumbers() {
+        const rows = document.querySelectorAll('.step-row');
+        rows.forEach((row, idx) => {
+            const badge = row.querySelector('.badge-step');
+            if (badge) badge.innerText = idx + 1;
+        });
+    }
+
+    function removeStep(btn) {
+        btn.closest('.step-row').remove();
+        updateStepNumbers();
+    }
+
+    function renderTroopsEditor(parsed) {
+        const container = document.getElementById('editor-body');
+        const list = Array.isArray(parsed) ? parsed : [];
+        
+        const stepsContainer = document.createElement('div');
+        stepsContainer.id = 'troops-steps';
+        container.appendChild(stepsContainer);
+
+        list.forEach((step, idx) => {
+            addTroopStep(step);
+        });
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn btn-outline-success w-100 mt-3';
+        addBtn.innerText = '+ Add Recruitment Step';
+        addBtn.onclick = () => addTroopStep({});
+        container.appendChild(addBtn);
+    }
+
+    function addTroopStep(data) {
+        const stepDiv = document.createElement('div');
+        stepDiv.className = 'glass-card mb-3 p-3 troop-step';
+        
+        let buildingOptions = '';
+        buildingsList.forEach(b => {
+           buildingOptions += `<option value="${b}" ${data.building === b ? 'selected' : ''}>${b}</option>`;
+        });
+
+        stepDiv.innerHTML = `
+            <div class="d-flex justify-content-between mb-3">
+                <h5 class="step-title">Step</h5>
+                <button class="btn btn-sm btn-outline-danger" onclick="this.parentElement.parentElement.remove()">✕</button>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label small">Requirement: Building</label>
+                    <select class="form-control form-control-premium req-building">
+                        ${buildingOptions}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label small">Requirement: Level</label>
+                    <input type="number" class="form-control form-control-premium req-level" value="${data.level || 0}">
+                </div>
+            </div>
+            <div class="mt-3">
+                <label class="form-label small">Recruitment Targets (JSON)</label>
+                <textarea class="form-control form-control-premium recruit-json" rows="3">${JSON.stringify(data.build || {}, null, 2)}</textarea>
+            </div>
+            <div class="mt-3">
+                <label class="form-label small">Scavenging / Farm (JSON)</label>
+                <textarea class="form-control form-control-premium farm-json" rows="2">${JSON.stringify(data.farm || {}, null, 2)}</textarea>
+            </div>
+        `;
+        document.getElementById('troops-steps').appendChild(stepDiv);
+    }
+
+    function renderOffensiveEditor(parsed) {
+        const container = document.getElementById('editor-body');
+        const jsonEditor = document.createElement('textarea');
+        jsonEditor.id = 'offensive-json-editor';
+        jsonEditor.className = 'form-control form-control-premium mt-3';
+        jsonEditor.style.height = '300px';
+        jsonEditor.style.fontFamily = 'monospace';
+        jsonEditor.value = JSON.stringify(parsed || {}, null, 2);
+
+        const hint = document.createElement('p');
+        hint.className = 'text-muted small mt-2';
+        hint.innerText = 'Offensive templates use JSON format for army composition.';
+
+        container.appendChild(jsonEditor);
+        container.appendChild(hint);
+    }
+
+    async function saveCurrentTemplate() {
+        let content = '';
+        try {
+            if (currentCategory === 'builder') {
+                const rows = document.querySelectorAll('#builder-rows .step-row');
+                rows.forEach(row => {
+                    const b = row.querySelector('.building-select').value;
+                    const l = row.querySelector('.building-level').value;
+                    content += `${b}:${l}\n`;
+                });
+            } else if (currentCategory === 'troops') {
+                const steps = [];
+                document.querySelectorAll('.troop-step').forEach(div => {
+                    steps.push({
+                        building: div.querySelector('.req-building').value,
+                        level: parseInt(div.querySelector('.req-level').value),
+                        build: JSON.parse(div.querySelector('.recruit-json').value || '{}'),
+                        farm: JSON.parse(div.querySelector('.farm-json').value || '{}')
+                    });
+                });
+                content = JSON.stringify(steps, null, 2);
+            } else if (currentCategory === 'offensive') {
+                content = document.getElementById('offensive-json-editor').value;
+                JSON.parse(content); // Validate JSON
+            }
+
+            const response = await fetch(`/api/templates/${currentCategory}/${currentName}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+
+            if (response.ok) {
+                alert('Template saved successfully!');
+                loadTemplate(currentCategory, currentName);
+            } else {
+                alert('Failed to save template.');
+            }
+        } catch (e) {
+            alert('Error: Invalid JSON format in recruitment or scavenging fields.');
+        }
+    }
+
+    async function deleteCurrentTemplate() {
+        if (!confirm(`Are you sure you want to delete ${currentName}?`)) return;
+
+        const response = await fetch(`/api/templates/${currentCategory}/${currentName}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            currentName = '';
+            document.getElementById('editor-card').style.display = 'none';
+            document.getElementById('no-selection-card').style.display = 'block';
+            loadTemplatesList();
+        }
+    }
+
+    async function createNewTemplate() {
+        const nameInput = document.getElementById('newTemplateName');
+        let name = nameInput.value.trim();
+        if (!name) return;
+        if (!name.endsWith('.txt')) name += '.txt';
+
+        const response = await fetch(`/api/templates/${currentCategory}/${name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: currentCategory === 'builder' ? '' : '[]' })
+        });
+
+        if (response.ok) {
+            nameInput.value = '';
+            await loadTemplatesList();
+            loadTemplate(currentCategory, name);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
 {% endblock %}

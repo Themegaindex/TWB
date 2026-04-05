@@ -1,0 +1,460 @@
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css"
+    integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+
+  <title>TWB - Management Interface</title>
+</head>
+
+<body inject_newvt_svd="true">
+  <div class="wrapper">
+    <nav class="navbar navbar-expand-sm bg-dark navbar-dark">
+      <ul class="navbar-nav">
+        <li class="nav-item">
+          <a class="nav-link" href="/">Status</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/config">Bot configuration</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/villages">Village configuration</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/map">World map</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/building_templates">Building templates</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link disabled" href="/attacks">Attack planner (alpha)</a>
+        </li>
+      </ul>
+    </nav>
+    <div class="container-fluid">
+
+
+      <style>
+        :root {
+          --tw-brown: #3b2a1a;
+          --tw-gold: #c1a061;
+          --tw-light: #f5e8c1;
+          --tw-border: #4a3421;
+          --cell: 53px;
+          /* Standard TW tile width */
+          --cell-h: 38px;
+          /* Standard TW tile height */
+        }
+
+        body {
+          background-color: #222;
+        }
+
+        #map-container {
+          background: url('https://dspl.innogamescdn.com/asset/89d9727b/graphic/map/gras1.png');
+          /* Fallback pattern */
+          background-color: #5c8a3c;
+          border: 3px solid var(--tw-border);
+          border-radius: 4px;
+          box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.5);
+          position: relative;
+          overflow: hidden;
+          height: 80vh;
+        }
+
+        .paper-panel {
+          background: #e3d5b3 url('https://dspl.innogamescdn.com/asset/89d9727b/graphic/index/main_bg.jpg');
+          border: 2px solid #4a3421;
+          box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.5);
+          padding: 15px;
+          color: #3b2a1a;
+          font-family: "Segoe UI", Tahoma, sans-serif;
+        }
+
+        .paper-header {
+          background: #5c3b1e;
+          color: #f5e8c1;
+          padding: 4px 10px;
+          border-radius: 3px;
+          font-weight: bold;
+          font-size: 14px;
+          margin-bottom: 10px;
+          text-shadow: 1px 1px #000;
+        }
+
+        #map-canvas {
+          position: absolute;
+          top: 0;
+          left: 0;
+          cursor: grab;
+        }
+
+        #map-canvas:active {
+          cursor: grabbing;
+        }
+
+        #map-tooltip {
+          position: fixed;
+          background: #fff8e1;
+          border: 2px solid #5c3b1e;
+          padding: 8px 12px;
+          font-size: 12px;
+          color: #221a0f;
+          z-index: 1000;
+          display: none;
+          pointer-events: none;
+          box-shadow: 3px 3px 6px rgba(0, 0, 0, 0.3);
+          border-radius: 2px;
+        }
+
+        .coord-box {
+          position: absolute;
+          bottom: 10px;
+          left: 10px;
+          background: rgba(0, 0, 0, 0.7);
+          color: #fff;
+          padding: 3px 8px;
+          border-radius: 3px;
+          font-size: 11px;
+          font-family: monospace;
+        }
+
+        /* Legend colors */
+        .dot {
+          display: inline-block;
+          width: 12px;
+          height: 12px;
+          border-radius: 2px;
+          margin-right: 5px;
+          border: 1px solid #000;
+        }
+
+        .dot-own {
+          background: #0000ff;
+        }
+
+        .dot-tribe {
+          background: #00ffff;
+        }
+
+        .dot-enemy {
+          background: #ff0000;
+        }
+
+        .dot-barb {
+          background: #808080;
+        }
+
+        .dot-bonus {
+          background: #ffff00;
+        }
+
+        #village-info-table td {
+          padding: 4px;
+          font-size: 12px;
+        }
+
+        #village-info-table th {
+          color: #5c3b1e;
+          font-size: 11px;
+          text-transform: uppercase;
+        }
+      </style>
+
+      <div class="row">
+        <div class="col-md-9">
+          <div id="map-container">
+            <canvas id="map-canvas" width="790" height="723"></canvas>
+            <div id="map-tooltip"></div>
+            <div class="coord-box" id="coords">x:0 y:0</div>
+          </div>
+        </div>
+
+        <div class="col-md-3">
+          <div class="paper-panel" style="height: 80vh; overflow-y: auto;">
+            <div class="paper-header">VILLAGE DETAILS</div>
+            <div id="detail-content">
+              <p>Click a village to see details.</p>
+            </div>
+
+            <div class="paper-header" style="margin-top: 20px;">LEGEND</div>
+            <div style="font-size: 12px; line-height: 1.8;">
+              <span class="dot dot-own"></span> Your Village<br>
+              <span class="dot dot-tribe"></span> Tribe Member<br>
+              <span class="dot dot-enemy"></span> Enemy<br>
+              <span class="dot dot-barb"></span> Barbarian<br>
+              <span class="dot dot-bonus"></span> Bonus Village
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        const MAP_DATA = { "grid": {}, "extra": {} };
+        const GRID = MAP_DATA.grid;
+        const EXTRA = MAP_DATA.extra || {};
+
+        const TILE_W = 53;
+        const TILE_H = 38;
+
+        const canvas = document.getElementById('map-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('map-container');
+        const tooltip = document.getElementById('map-tooltip');
+        const coordDisplay = document.getElementById('coords');
+
+        let scale = 1.0;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let lastX, lastY;
+
+        // Village size categories (same as TW)
+        function getVillageSize(points) {
+          if (points < 300) return 1;
+          if (points < 1000) return 2;
+          if (points < 3000) return 3;
+          if (points < 9000) return 4;
+          return 5;
+        }
+
+        function drawVillage(ctx, px, py, vil, tw, th) {
+          const isBarb = (!vil.owner || vil.owner === '0');
+          const isOwner = (EXTRA.owner && vil.owner === EXTRA.owner);
+          const isTribe = (EXTRA.tribe && vil.owner !== '0' && vil.tribe === EXTRA.tribe);
+          const points = vil.points || 0;
+          const size = getVillageSize(points);
+
+          // Draw terrain (grass)
+          ctx.fillStyle = '#5c8a3c';
+          ctx.fillRect(px, py, tw, th);
+          ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+          ctx.strokeRect(px, py, tw, th);
+
+          // Draw Village Sprite
+          // We mock the TW style with paths because we don't have local assets
+          const vx = px + tw / 2;
+          const vy = py + th / 2;
+
+          ctx.save();
+          ctx.translate(vx, vy);
+
+          // Shadow
+          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          ctx.beginPath();
+          ctx.ellipse(0, th * 0.3, tw * 0.3, th * 0.15, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Color circle (indicator)
+          let color = '#808080'; // Barb
+          if (isOwner) color = '#0000ff';
+          else if (isTribe) color = '#00ffff';
+          else if (!isBarb) color = '#ff0000';
+
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(0, th * 0.35, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#000';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          // House Body
+          const houseW = 10 + size * 2;
+          const houseH = 6 + size * 2;
+
+          const grad = ctx.createLinearGradient(0, -houseH, 0, houseH);
+          grad.addColorStop(0, '#a67c52');
+          grad.addColorStop(1, '#5c3b1e');
+          ctx.fillStyle = grad;
+
+          ctx.fillRect(-houseW / 2, -houseH / 2, houseW, houseH);
+          ctx.strokeStyle = '#221a0f';
+          ctx.strokeRect(-houseW / 2, -houseH / 2, houseW, houseH);
+
+          // Roof
+          ctx.fillStyle = '#b71c1c'; // Red roof
+          ctx.beginPath();
+          ctx.moveTo(-houseW / 2 - 2, -houseH / 2);
+          ctx.lineTo(0, -houseH / 2 - houseH * 0.8);
+          ctx.lineTo(houseW / 2 + 2, -houseH / 2);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.restore();
+
+          // Label
+          if (scale > 0.7) {
+            ctx.fillStyle = '#fff';
+            ctx.font = '9px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText((vil.name || 'Village').substring(0, 10), px + tw / 2, py + th - 2);
+          }
+        }
+
+        function render() {
+          canvas.width = container.clientWidth;
+          canvas.height = container.clientHeight;
+
+          const tw = Math.floor(TILE_W * scale);
+          const th = Math.floor(TILE_H * scale);
+
+          const xs = Object.keys(GRID).sort((a, b) => a - b);
+          if (!xs.length) return;
+          const ys = Object.keys(GRID[xs[0]]).sort((a, b) => a - b);
+
+          for (let xi = 0; xi < xs.length; xi++) {
+            for (let yi = 0; yi < ys.length; yi++) {
+              const px = Math.floor(xi * tw + offsetX);
+              const py = Math.floor(yi * th + offsetY);
+
+              // Culling
+              if (px + tw < 0 || px > canvas.width || py + th < 0 || py > canvas.height) continue;
+
+              const vil = GRID[xs[xi]][ys[yi]];
+              if (vil) {
+                drawVillage(ctx, px, py, vil, tw, th);
+              } else {
+                // Empty land
+                ctx.fillStyle = '#5c8a3c';
+                ctx.fillRect(px, py, tw, th);
+                ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+                ctx.strokeRect(px, py, tw, th);
+              }
+            }
+          }
+        }
+
+        // --- Interaction ---
+        container.addEventListener('mousedown', e => {
+          isDragging = true;
+          lastX = e.clientX;
+          lastY = e.clientY;
+        });
+
+        window.addEventListener('mousemove', e => {
+          const rect = container.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+
+          // Hover Update
+          const tw = Math.floor(TILE_W * scale);
+          const th = Math.floor(TILE_H * scale);
+          const xi = Math.floor((mx - offsetX) / tw);
+          const yi = Math.floor((my - offsetY) / th);
+
+          const xs = Object.keys(GRID).sort((a, b) => a - b);
+          if (xi >= 0 && xi < xs.length) {
+            const worldX = xs[xi];
+            const ys = Object.keys(GRID[worldX]).sort((a, b) => a - b);
+            if (yi >= 0 && yi < ys.length) {
+              const worldY = ys[yi];
+              coordDisplay.innerText = `x:${worldX} y:${worldY}`;
+
+              const vil = GRID[worldX][worldY];
+              if (vil) {
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+                tooltip.innerHTML = `<b>${vil.name}</b> (${worldX}|${worldY})<br>
+                               Points: ${vil.points}<br>
+                               Owner: ${vil.owner_id || 'Barbarian'}`;
+              } else {
+                tooltip.style.display = 'none';
+              }
+            }
+          }
+
+          if (!isDragging) return;
+          offsetX += (e.clientX - lastX);
+          offsetY += (e.clientY - lastY);
+          lastX = e.clientX;
+          lastY = e.clientY;
+          render();
+        });
+
+        window.addEventListener('mouseup', () => isDragging = false);
+
+        container.addEventListener('wheel', e => {
+          e.preventDefault();
+          const oldScale = scale;
+          scale *= (e.deltaY > 0 ? 0.9 : 1.1);
+          scale = Math.max(0.2, Math.min(2, scale));
+
+          // Zoom towards center or mouse would be better, but keep it simple
+          render();
+        }, { passive: false });
+
+        // --- Click details ---
+        container.addEventListener('click', e => {
+          const rect = container.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const tw = Math.floor(TILE_W * scale);
+          const th = Math.floor(TILE_H * scale);
+          const xi = Math.floor((mx - offsetX) / tw);
+          const yi = Math.floor((my - offsetY) / th);
+
+          const xs = Object.keys(GRID).sort((a, b) => a - b);
+          if (xi >= 0 && xi < xs.length) {
+            const worldX = xs[xi];
+            const ys = Object.keys(GRID[worldX]).sort((a, b) => a - b);
+            if (yi >= 0 && yi < ys.length) {
+              const vil = GRID[worldX][ys[yi]];
+              if (vil) showVillage(vil, worldX, ys[yi]);
+            }
+          }
+        });
+
+        function showVillage(vil, x, y) {
+          const content = document.getElementById('detail-content');
+          content.innerHTML = `
+      <table id="village-info-table">
+        <tr><th>Village:</th><td><b>${vil.name}</b></td></tr>
+        <tr><th>Coords:</th><td>${x}|${y}</td></tr>
+        <tr><th>Points:</th><td>${vil.points}</td></tr>
+        <tr><th>Owner:</th><td>${vil.owner_id || 'none'}</td></tr>
+        <tr><th>Tribe:</th><td>${vil.tribe || 'none'}</td></tr>
+      </table>
+      <div style="margin-top: 15px;">
+        <button class="btn btn-sm btn-dark w-100" onclick="alert('TODO: Add to Farm List')">➕ Add to Farm</button>
+      </div>
+    `;
+        }
+
+        // Init
+        window.addEventListener('resize', render);
+
+        // Center map
+        const xs = Object.keys(GRID);
+        if (xs.length) {
+          offsetX = container.clientWidth / 2 - (xs.length * TILE_W) / 2;
+          offsetY = container.clientHeight / 2 - (Object.keys(GRID[xs[0]]).length * TILE_H) / 2;
+        }
+
+        render();
+
+      </script>
+
+    </div>
+  </div>
+
+
+  <script src="https://code.jquery.com/jquery-3.3.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"
+    integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
+    crossorigin="anonymous"></script>
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"
+    integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM"
+    crossorigin="anonymous"></script>
+
+
+  <div id="newvtPopupMenu"></div>
+</body>
+
+</html>

@@ -134,7 +134,7 @@
         "sword": 100
       },
       "stable": {
-        "spy": 150,
+        "spy": 100,
         "light": 250
       },
       "garage": {
@@ -162,7 +162,7 @@
         "sword": 100
       },
       "stable": {
-        "spy": 150,
+        "spy": 100,
         "light": 250
       },
       "garage": {
@@ -194,7 +194,7 @@
         "axe": 5500
       },
       "stable": {
-        "spy": 500,
+        "spy": 100,
         "light": 2500,
         "heavy": 150
       },

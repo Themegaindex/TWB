@@ -10,11 +10,11 @@
       },
       "stable": {
         "light": 1000,
-        "spy": 500
+        "spy": 100
        },
        "workshop": {
         "ram": 150,
-        "spy": 500
+        "spy": 100
        }
       },
     "farm": [

@@ -12,6 +12,12 @@ from core.filemanager import FileManager
 from game.attack import AttackCache
 # --- END PERFORMANCE ---
 
+try:
+    from core.database import DatabaseManager
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
+
 
 class ReportManager:
     """
@@ -33,25 +39,27 @@ class ReportManager:
     def has_resources_left(self, vid):
         """
         Checks if there are any resources left after farm
-        Used by the farm manager script
+        Uses DatabaseManager for production-aware estimation
         """
+        if _DB_AVAILABLE:
+            res = DatabaseManager.get_predicted_resources(vid)
+            if res and sum(res.values()) > 0:
+                return True, res
+
+        # Fallback to legacy report-only check
         possible_reports = []
         for repid in self.last_reports:
             entry = self.last_reports[repid]
             if vid == entry["dest"] and entry["extra"].get("when", None):
                 possible_reports.append(entry)
-        # self.logger.debug(f"Considered {len(possible_reports)} reports")
+
         if len(possible_reports) == 0:
             return False, {}
 
         def highest_when(attack):
-            """
-            Converts the date of an attack when resource gains were high
-            """
             return datetime.fromtimestamp(int(attack["extra"]["when"]))
 
         entry = max(possible_reports, key=highest_when)
-        self.logger.debug("This is the newest? %s", datetime.fromtimestamp(int(entry["extra"]["when"])))
         if entry["extra"].get("resources", None):
             return True, entry["extra"]["resources"]
         return False, {}
@@ -78,21 +86,8 @@ class ReportManager:
                     return 1
 
                 if entry["losses"] != {}:
-                    # Acceptable losses for attacks
-                    print(f'Units sent: {entry["extra"]["units_sent"]}')
-                    print(f'Units lost: {entry["losses"]}')
-
-                for sent_type in entry["extra"]["units_sent"]:
-                    amount = entry["extra"]["units_sent"][sent_type]
-                    if sent_type in entry["losses"]:
-                        if amount == entry["losses"][sent_type]:
-                            return 0  # Lost all units!
-                        elif entry["losses"][sent_type] <= 1:
-                            # Allow to lose 1 unit (luck depended)
-                            return 1  # Lost 'just' one unit
-
-                if entry["losses"] != {}:
-                    return 0  # Disengage if anything was lost!
+                    # Disengage if anything was lost!
+                    return 0
         return -1
 
     # --- PERFORMANCE (POINT 2) ---
@@ -128,9 +123,22 @@ class ReportManager:
         # --- END PERFORMANCE ---
 
         new = 0
+        from core.database import DatabaseManager
+
         for report_id in ids:
             if report_id in self.last_reports:
                 continue
+                
+            # Optionally check database if report exists to prevent redundant downloads
+            try:
+                if getattr(DatabaseManager, 'get_report', None):
+                    report_data = DatabaseManager.get_report(report_id)
+                    if report_data:
+                        self.last_reports[report_id] = report_data
+                        continue
+            except Exception:
+                pass
+
             new += 1
             url = f"game.php?village={self.village_id}&screen=report&mode=all&group_id=0&view={report_id}"
             data = self.wrapper.get_url(url)
@@ -188,106 +196,147 @@ class ReportManager:
         to_player = None
 
         extra = {}
-
         losses = {}
 
+        # 1. Parse timestamp
         attacked = re.search(r'(\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2})<span class=\"small grey\">', report)
         if attacked:
-            extra["when"] = int(datetime.strptime(attacked.group(1), "%d.%m.%y %H:%M:%S").timestamp())
+            try:
+                extra["when"] = int(datetime.strptime(attacked.group(1), "%d.%m.%y %H:%M:%S").timestamp())
+            except (ValueError, IndexError):
+                self.logger.warning("Failed to parse timestamp in report %s", report_id)
+                extra["when"] = int(datetime.now().timestamp())
 
-        attacker = re.search(r'(?s)(<table id="attack_info_att".+?</table>)', report)
+        # 2. Parse attacker info
+        attacker = re.search(r'(?s)<table id="attack_info_att".+?Agresor:.*?data-id="(\d+)"(?:.*?data-player="(\d+)")?', report)
         if attacker:
-            attacker_data = re.search(
-                r'data-player="(\d+)" data-id="(\d+)"', attacker.group(1)
-            )
-            if attacker_data:
-                from_player = attacker_data.group(1)
-                from_village = attacker_data.group(2)
-                units = re.search(
-                    r'(?s)<table id="attack_info_att_units"(.+?)</table>',
-                    attacker.group(1),
-                )
-                if units:
-                    sent_units = re.findall("(?s)<tr>(.+?)</tr>", units.group(1))
-                    extra["units_sent"] = self.re_unit(
-                        Extractor.units_in_total(sent_units[0])
-                    )
-                    if len(sent_units) == 2:
-                        extra["units_losses"] = self.re_unit(
-                            Extractor.units_in_total(sent_units[1])
-                        )
-                        if from_player == self.game_state["player"]["id"]:
-                            losses = extra["units_losses"]
+            from_village = attacker.group(1)
+            from_player = attacker.group(2) if attacker.group(2) else "0"
+            
+            units_match = re.search(r'(?s)<table id="attack_info_att_units"(.+?)</table>', report)
+            if units_match:
+                sent_units = re.findall(r"(?s)<tr[^>]*>(.+?)</tr>", units_match.group(1))
+                if len(sent_units) >= 2:
+                    extra["units_sent"] = self.re_unit(Extractor.units_in_total(sent_units[1]))
+                if len(sent_units) == 3:
+                    extra["units_losses"] = self.re_unit(Extractor.units_in_total(sent_units[2]))
+                    losses = extra.get("units_losses", {})
 
-        defender = re.search(r'(?s)(<table id="attack_info_def".+?</table>)', report)
+        # 3. Parse defender info
+        defender = re.search(r'(?s)<table id="attack_info_def".+?Obro.*?data-id="(\d+)"(?:.*?data-player="(\d+)")?', report)
         if defender:
-            defender_data = re.search(
-                r'data-player="(\d+)" data-id="(\d+)"', defender.group(1)
-            )
-            if defender_data:
-                to_player = defender_data.group(1)
-                to_village = defender_data.group(2)
-                units = re.search(
-                    r'(?s)<table id="attack_info_def_units"(.+?)</table>',
-                    defender.group(1),
-                )
-                if units:
-                    def_units = re.findall("(?s)<tr>(.+?)</tr>", units.group(1))
-                    extra["defence_units"] = self.re_unit(
-                        Extractor.units_in_total(def_units[0])
-                    )
-                    if len(def_units) == 2:
-                        extra["defence_losses"] = self.re_unit(
-                            Extractor.units_in_total(def_units[1])
-                        )
-                        if to_player == self.game_state["player"]["id"]:
-                            losses = extra["defence_losses"]
-        results = re.search(r'(?s)(<table id="attack_results".+?</table>)', report)
-        report = report.replace('<span class="grey">.</span>', "")
+            to_village = defender.group(1)
+            to_player = defender.group(2) if defender.group(2) else "0"
+            
+            def_units_match = re.search(r'(?s)<table id="attack_info_def_units"(.+?)</table>', report)
+            if def_units_match:
+                def_rows = re.findall(r"(?s)<tr[^>]*>(.+?)</tr>", def_units_match.group(1))
+                if len(def_rows) >= 2:
+                    extra["defence_units"] = self.re_unit(Extractor.units_in_total(def_rows[1]))
+                if len(def_rows) == 3:
+                    extra["defence_losses"] = self.re_unit(Extractor.units_in_total(def_rows[2]))
+
+        # 4. Parse loot results
+        results = re.search(r'(?s)<table id="attack_results".+?</table>', report)
         if results:
             loot = {}
-            for loot_entry in re.findall(
-                    r'<span class="icon header (wood|stone|iron)".+?</span>(\d+)', report
-            ):
-                loot[loot_entry[0]] = loot_entry[1]
+            for loot_entry in re.findall(r'<span class="icon header (wood|stone|iron)".+?</span>([\d\.,\s&nbsp;]+)', report):
+                amount = re.sub(r'[^\d]', '', loot_entry[1])
+                if amount:
+                    loot[loot_entry[0]] = amount
             extra["loot"] = loot
-            self.logger.info("attack report %s -> %s", from_village, to_village)
+            self.logger.info("Processed loot for %s -> %s", from_village, to_village)
 
-        scout_results = re.search(
-            r'(?s)(<table id="attack_spy_resources".+?</table>)', report
-        )
+        # 5. Parse scout results (buildings & resources)
+        scout_results = re.search(r'(?s)<table id="attack_spy_resources".+?</table>', report)
         if scout_results:
-            self.logger.info("scout report %s -> %s", from_village, to_village)
-            scout_buildings = re.search(
-                r'(?s)<input id="attack_spy_building_data" type="hidden" value="(.+?)"',
-                report,
-            )
+            scout_buildings = re.search(r'(?s)<input id="attack_spy_building_data" type="hidden" value="(.+?)"', report)
             if scout_buildings:
-                raw = scout_buildings.group(1).replace("&quot;", '"')
-                extra["buildings"] = self.re_building(json.loads(raw))
+                try:
+                    raw = scout_buildings.group(1).replace("&quot;", '"')
+                    extra["buildings"] = self.re_building(json.loads(raw))
+                except (json.JSONDecodeError, ValueError):
+                    self.logger.debug("Failed to parse building data in scout report")
+
             found_res = {}
-            for loot_entry in re.findall(
-                    r'<span class="icon header (wood|stone|iron)".+?</span>(\d+)', scout_results.group(1)
-            ):
-                found_res[loot_entry[0]] = loot_entry[1]
+            for res_entry in re.findall(r'<span class="icon header (wood|stone|iron)".+?</span>([\d\.,\s&nbsp;]+)', scout_results.group(1)):
+                amount = re.sub(r'[^\d]', '', res_entry[1])
+                if amount:
+                    found_res[res_entry[0]] = amount
             extra["resources"] = found_res
-            units_away = re.search(
-                r'(?s)(<table id="attack_spy_away".+?</table>)', report
-            )
-            if units_away:
-                data_away = self.re_unit(Extractor.units_in_total(units_away.group(1)))
-                extra["units_away"] = data_away
 
         attack_type = "scout" if scout_results and not results else "attack"
 
         # --- PERFORMANCE (POINT 3) ---
         # Update farm statistics immediately when processing the report
-        if attack_type == "attack" and to_village and from_player == self.game_state["player"]["id"]:
+        player_id = self.game_state.get("player", {}).get("id") if self.game_state else None
+        if attack_type == "attack" and to_village and (not player_id or str(from_player) == str(player_id)):
             try:
                 self.update_farm_cache_stats(to_village, extra, losses)
             except Exception as e:
                 self.logger.warning(f"Failed to update farm cache for {to_village}: {e}")
         # --- END PERFORMANCE ---
+
+        # --- DB PERSISTENCE ---
+        if _DB_AVAILABLE:
+            try:
+                loot_dict = extra.get("loot", {})
+                scout_res = extra.get("resources", None)
+                scout_bld = extra.get("buildings", None)
+                # Check HTML indications of win/loss
+                html_won_indicators = [
+                    'image_attack_won', 'Pełna wygrana', 'wygrał', 'green.webp', 'yellow.webp',
+                ]
+                html_loss_indicators = [
+                    'image_attack_lost', 'Porażka', 'red.webp',
+                ]
+                
+                # Deduce win mathematically or via HTML
+                won = (losses == {})
+                if any(ind in report for ind in html_won_indicators):
+                    won = True
+                elif any(ind in report for ind in html_loss_indicators):
+                    won = False
+                elif losses and extra.get("units_sent"):
+                    total_sent = sum(extra["units_sent"].values())
+                    total_lost = sum(losses.values())
+                    won = total_lost < total_sent
+
+                attack_id = DatabaseManager.save_attack(
+                    origin_id   = from_village,
+                    target_id   = to_village,
+                    troops_sent = extra.get("units_sent", {}),
+                    loot        = {k: int(v) for k, v in loot_dict.items()},
+                    won         = won,
+                    scout_only  = (attack_type == "scout"),
+                    arrived_at  = datetime.fromtimestamp(extra["when"]) if extra.get("when") else None,
+                )
+                if losses and attack_id:
+                    DatabaseManager.save_units_lost(attack_id, {k: int(v) for k, v in losses.items()})
+                if extra.get("defence_losses") and attack_id:
+                    DatabaseManager.save_units_lost(
+                        attack_id,
+                        {k: int(v) for k, v in extra["defence_losses"].items()},
+                        side="defender"
+                    )
+                DatabaseManager.save_report(
+                    report_id   = report_id,
+                    report_type = attack_type,
+                    origin_id   = from_village,
+                    dest_id     = to_village,
+                    extra       = extra,
+                    loot        = {k: int(v) for k, v in loot_dict.items()},
+                    losses      = {k: int(v) for k, v in losses.items()} if losses else {},
+                    scout_resources = {k: int(v) for k, v in scout_res.items()} if scout_res else None,
+                    scout_buildings = scout_bld,
+                    created_at  = datetime.fromtimestamp(extra["when"]) if extra.get("when") else None,
+                )
+                # Update production estimate from scout building data
+                if scout_bld and to_village:
+                    DatabaseManager.update_village_production(to_village, scout_bld)
+            except Exception as _db_err:
+                self.logger.debug("DB persistence error in attack_report: %s", _db_err)
+        # --- END DB PERSISTENCE ---
 
         res = self.put(
             report_id, attack_type, from_village, to_village, data=extra, losses=losses
@@ -306,10 +355,14 @@ class ReportManager:
 
         cache_entry = AttackCache.get_cache(village_id)
         if cache_entry is None:
-            # Don't create new entries here, only update existing ones
-            # New entries are created by AttackManager.attacked
-            self.logger.debug(f"No attack cache found for {village_id}, skipping stat update.")
-            return
+            self.logger.debug(f"No attack cache found for {village_id}, creating new entry from report.")
+            cache_entry = {
+                "scout": False,
+                "safe": True,
+                "high_profile": False,
+                "low_profile": False,
+                "last_attack": 0,
+            }
 
         # Initialize stats if not present
         cache_entry.setdefault("attack_count", 0)
@@ -327,9 +380,14 @@ class ReportManager:
 
         if extra_data.get("units_sent"):
             cache_entry["total_sent"] += sum(int(v) for v in extra_data["units_sent"].values())
+            cache_entry["last_sent"] = extra_data["units_sent"]
 
         if losses:
             cache_entry["total_losses"] += sum(int(v) for v in losses.values())
+        
+        # Save was_lost flag based on if there were any losses this run
+        cache_entry["was_lost"] = len(losses) > 0 if losses else False
+        cache_entry["last_losses"] = losses if losses else {}
 
         # Apply farm profile logic
         percentage_lost = (cache_entry["total_losses"] / cache_entry["total_sent"] * 100) if cache_entry["total_sent"] > 0 else 0
@@ -393,29 +451,79 @@ class ReportManager:
 
 class ReportCache:
     """
-    File cache for local reports
+    Cache raportów — DB jako primary source, plik JSON jako fallback.
+
+    Strategia:
+    - get_cache:  DB first, fallback plik.
+    - set_cache:  tylko plik JEŚLI DB niedostępna (raport już zapisany do
+                  DBReport przez attack_report / put, więc nie trzeba duplikować).
+    - cache_grab: DB first, uzupełniamy brakującymi plikami.
     """
+
     @staticmethod
-    def get_cache(report_id):
-        """
-        Reads a report entry
-        """
+    def get_cache(report_id) -> dict | None:
+        """Zwraca raport. Priorytet: DB → plik JSON."""
+        if _DB_AVAILABLE:
+            try:
+                data = DatabaseManager.get_report(str(report_id))
+                if data:
+                    # Znormalizuj do starego formatu (backward compat)
+                    return {
+                        "type":   data.get("type", ""),
+                        "origin": data.get("origin"),
+                        "dest":   data.get("dest"),
+                        "losses": data.get("losses", {}),
+                        "extra":  data.get("extra", {}),
+                    }
+            except Exception:
+                pass
         return FileManager.load_json_file(f"cache/reports/{report_id}.json")
 
     @staticmethod
-    def set_cache(report_id, entry):
+    def set_cache(report_id, entry: dict) -> None:
+        """Persystuje raport.
+
+        Jeśli DB jest dostępna — raport jest już zapisany przez DatabaseManager.save_report()
+        wywołane wcześniej w attack_report(), więc nie duplikujemy. Zapis do pliku
+        zachowany tylko gdy DB niedostępna (fallback).
         """
-        Creates a report entry
-        """
-        FileManager.save_json_file(entry, f"cache/reports/{report_id}.json")
+        if not _DB_AVAILABLE:
+            FileManager.save_json_file(entry, f"cache/reports/{report_id}.json")
 
     @staticmethod
-    def cache_grab():
-        """
-        Reads all locally stored reports
-        """
-        output = {}
+    def cache_grab() -> dict:
+        """Zwraca wszystkie raporty. Priorytet: DB → pliki JSON."""
+        output: dict = {}
 
+        # 1. Pobierz z DB
+        if _DB_AVAILABLE:
+            try:
+                from sqlalchemy.orm import sessionmaker
+                from core.database import get_session
+                from core.models import DBReport
+                s = get_session()
+                if s:
+                    try:
+                        rows = s.query(DBReport).order_by(DBReport.created_at.desc()).limit(500).all()
+                        for r in rows:
+                            output[str(r.report_id)] = {
+                                "type":   r.report_type,
+                                "origin": r.origin_id,
+                                "dest":   r.dest_id,
+                                "losses": r.losses_json or {},
+                                "extra":  r.raw_extra or {},
+                            }
+                    finally:
+                        s.close()
+            except Exception:
+                pass
+
+        # 2. Uzupełnij plikami których nie ma w DB (legacy / migracja)
         for existing in FileManager.list_directory("cache/reports", ends_with=".json"):
-            output[existing.replace(".json", "")] = FileManager.load_json_file(f"cache/reports/{existing}")
+            rid = existing.replace(".json", "")
+            if rid not in output:
+                entry = FileManager.load_json_file(f"cache/reports/{existing}")
+                if entry:
+                    output[rid] = entry
+
         return output

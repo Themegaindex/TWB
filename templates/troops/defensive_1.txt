@@ -8,7 +8,7 @@
         "archer": 150
       },
       "stable": {
-        "spy": 150,
+        "spy": 100,
         "light": 250
        }
       },
@@ -26,7 +26,7 @@
         "archer": 2500
       },
       "stable": {
-        "spy": 1000,
+        "spy": 100,
         "light": 250,
         "heavy": 800
        }
